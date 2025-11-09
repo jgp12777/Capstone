@@ -1,0 +1,99 @@
+using System.Net.Sockets; //uses UDP
+using System.Text;       // Converts to text
+using System.Globalization;
+//------------------------simple settings---------------------------------------------------------------------------
+double onThreshold  = 0.6; // turns an action ON
+double offThreshold = 0.5; // turns action OFF (hysteresis)
+int DebounceMs = 150;         // require actions to stay stable this long
+int rateHz = 15;        // cap frequency    
+//-----------------------Status Variables---------------------------------------------------------------------------
+
+string active = "neutral";  //current confirmed action
+string candidate = "neutral"; //potential new action being considered
+DateTime candidateSince = DateTime.UtcNow; //when we start considering the action
+double lastConfidence =0.0;     // last seen confidence
+
+//rate limits
+int intervalMs = Math.Max(1,(int)Math.Round(1000.0 / rateHz));
+DateTime lastPrintAt    =DateTime.MinValue;
+string lastPrintedLine = "";        // drop duplicates
+
+Console.WriteLine("Listening on UDP :7400");
+Console.WriteLine("Send: action,confidence  (e.g.,push,0.82)");
+Console.WriteLine($"Rate limit: <= {rateHz} print/sec");
+Console.WriteLine("----------------------------------------------");
+
+
+//Open UDP port 7400 to listen for packets
+
+using var udp = new UdpClient(7400);
+
+
+//---------------------------------MAIN loop------------------------------------------------------------------------
+while (true)
+{
+    try
+    {
+        var res  = await udp.ReceiveAsync(); //1 UDP packet
+
+    var text = Encoding.UTF8.GetString(res.Buffer).Trim(); //byte to string
+     var parts = text.Split(',');
+    if (parts.Length != 2) continue; //ignore garbage
+
+    string action = parts[0].ToLowerInvariant(); //nomralize actions
+    if (!double.TryParse(parts[1], out var conf)) continue; // divide the confidense as a number
+    lastConfidence = conf;
+
+    //----------------------------filters----------------------------------------------------------------------------
+   
+   
+    string desired = active; //start from current state
+    // tiny cleaning rules:
+    if (conf >= onThreshold && action != "neutral") // strong singal switch to that action
+    {
+        desired = action;     // switch to action
+    }
+    else if (conf < offThreshold) // Weak signal switch to neutral
+    {
+        desired = "neutral"; // fall back to neutral
+    }
+
+
+    //apply Debounce
+    var now = DateTime.UtcNow;
+
+    if (desired != candidate)
+    {
+        // new candidate action; timer resets
+        candidate = desired;
+        candidateSince = now;
+    }
+    else
+        {
+            // candidate stayted the same; check dwell time
+            var dwellMs = (now - candidateSince).TotalMilliseconds;
+            if (dwellMs >= DebounceMs && active != candidate)
+            {
+                active = candidate; // passed debounce time makes it officiall
+            }
+        }
+    //-----------------------------------------output----------------------------------------------------------------------
+        string line = $"active={active} (candidate={candidate}  conf={conf:0.00})";
+        // Print the current status: whether active, what the candidate action is, and its confidence score
+
+        //only print if: enough time passed since last
+        //the line changed 
+        if((now-lastPrintAt).TotalMilliseconds >= intervalMs && line != lastPrintedLine)
+        {
+            Console.WriteLine(line);
+            lastPrintedLine = line;
+            lastPrintAt = now;
+        }
+    }
+    catch (Exception ex)
+    {
+        //catch errors
+        Console.WriteLine($"Warning: {ex.Message}");
+    }
+}
+
