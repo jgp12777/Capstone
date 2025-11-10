@@ -1,0 +1,332 @@
+
+
+using System.Net.Sockets; 
+using System.Text;       
+using System.Globalization;
+using System.Net;
+using System.Net.WebSockets;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
+
+//---------------------------------------------------------------------------------
+//------------------------simple settings------------------------------------------
+//---------------------------------------------------------------------------------
+
+double onThreshold  = 0.6; // turns an action ON
+double offThreshold = 0.5; // turns action OFF (hysteresis)
+int DebounceMs = 150;         // require actions to stay stable this long
+int rateHz = 15;        // cap frequency 
+int udpPort = 7400;
+int httpPort = 8080;   // used by the WebSocket server (ws://127.0.0.1:8080/stream)
+
+//---------------------------------------------------------------------------------
+//-----------------------Status Variables------------------------------------------
+//---------------------------------------------------------------------------------
+
+string active = "neutral";  // confirmed clean action
+string candidate = "neutral"; //potential new action 
+DateTime candidateSince = DateTime.UtcNow; //when we start considering the action
+double lastConfidence =0.0;     // last seen confidence
+DateTime activeSince = DateTime.UtcNow; //When currect action become active
+
+//rate limits
+int intervalMs = Math.Max(1,(int)Math.Round(1000.0 / rateHz));
+DateTime lastPrintAt    =DateTime.MinValue;
+string lastPrintedLine = "";
+string lastJson = "";        // drop duplicates
+
+//webSocket Clients
+var clients = new System.Collections.Generic.List<WebSocket>();
+object clientslock = new();
+
+
+
+Console.WriteLine("------------------------------------------------");
+Console.WriteLine("BrainWrapper (UDP → filtered → WebSocket + console)");
+Console.WriteLine($"UDP in:           :{udpPort}");
+Console.WriteLine($"WebSocket out:    ws://127.0.0.1:{httpPort}/stream");
+Console.WriteLine("Send:             action,confidence   e.g.  push,0.82");
+Console.WriteLine($"Debounce:         {DebounceMs} ms");
+Console.WriteLine($"Rate limit:       {rateHz} Hz");
+Console.WriteLine("------------------------------------------------");
+
+//---------------------------------------------------------------------------------
+//----------------------------------Start websocket server-------------------------
+//---------------------------------------------------------------------------------
+StartWebSocketServer();
+
+using var udp = new UdpClient(udpPort);
+
+
+
+
+
+
+//---------------------------------MAIN loop------------------------------------------------------------------------
+while (true)
+{
+    try
+    {
+        if (udp.Available > 0)
+        {
+
+
+            var res = await udp.ReceiveAsync(); //1 UDP packet
+
+            string text = Encoding.UTF8.GetString(res.Buffer).Trim(); //byte to string
+            var parts = text.Split(',');
+            if (parts.Length != 2) continue; //ignore garbage
+
+            string action = parts[0].ToLowerInvariant(); //nomralize actions
+            if (!double.TryParse(parts[1], out var conf)) continue; // divide the confidense as a number
+            lastConfidence = conf;
+
+            //----------------------------filters----------------------------------------------------------------------------
+
+
+            string desired = active; //start from current state
+                                     // tiny cleaning rules:
+            if (conf >= onThreshold && action != "neutral") // strong singal switch to that action
+            {
+                desired = action;     // switch to action
+            }
+            else if (conf < offThreshold) // Weak signal switch to neutral
+            {
+                desired = "neutral"; // fall back to neutral
+            }
+
+
+            //apply Debounce
+            var now = DateTime.UtcNow;
+
+            if (desired != candidate)
+            {
+                // new candidate action; timer resets
+                candidate = desired;
+                candidateSince = now;
+            }
+            else
+            {
+                // candidate stayted the same; check dwell time
+                var dwellMs = (now - candidateSince).TotalMilliseconds;
+                if (dwellMs >= DebounceMs && active != candidate)
+                {
+                    active = candidate; // passed debounce time makes it officiall
+                }
+            }
+        }
+    
+
+    {
+        var now = DateTime.UtcNow;
+        if ((now - lastPrintAt).TotalMilliseconds >= intervalMs)
+        {
+            lastPrintAt = now;
+
+            // Build status line for console
+            string line = $"active={active}  (candidate={candidate}, conf={lastConfidence:0.00})";
+
+            // Build JSON event for WebSocket clients
+            int durationMs = (int)Math.Max(0, (now - activeSince).TotalMilliseconds);
+            string json = BuildJson(active, lastConfidence, durationMs);
+
+            // Console: only print if it changed
+            if (line != lastPrintedLine)
+            {
+                Console.WriteLine(line);
+                lastPrintedLine = line;
+            }
+
+            // WebSocket: only broadcast if it changed
+            if (json != lastJson)
+            {
+                await BroadcastAsync(json);
+                lastJson = json;
+            }
+        }
+    }
+
+    await Task.Delay(5);
+
+    }
+catch (Exception ex)
+    {
+        //catch errors
+        Console.WriteLine($"Warning: {ex.Message}");
+    }
+
+}
+
+//-----------------------------------------------------------------------
+// HELPER: BUILD JSON STRING
+//-----------------------------------------------------------------------
+string BuildJson(string action, double conf, int durationMs)
+{
+    long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    // minimal JSON, no external libs
+    var sb = new StringBuilder();
+    sb.Append('{');
+    sb.Append("\"ts\":").Append(ts).Append(',');
+    sb.Append("\"type\":\"mental_command\",");
+    sb.Append("\"action\":\"").Append(action).Append("\",");
+    sb.Append("\"confidence\":").Append(conf.ToString("0.###", CultureInfo.InvariantCulture)).Append(',');
+    sb.Append("\"durationMs\":").Append(durationMs).Append(',');
+    sb.Append("\"raw\":{\"source\":\"csv\"}");
+    sb.Append('}');
+    return sb.ToString();
+}
+
+//-----------------------------------------------------------------------
+// HELPER: bROADCAST A json message to all websocket clients
+//-----------------------------------------------------------------------
+async Task BroadcastAsync(string json)
+{
+    byte[] bytes = Encoding.UTF8.GetBytes(json);
+    var dead = new System.Collections.Generic.List<WebSocket>();
+
+    lock (clientslock)
+    {
+        foreach (var ws in clients)
+        {
+            if (ws.State != WebSocketState.Open)
+            {
+                dead.Add(ws);
+                continue;
+            }
+
+            try
+            {
+                // Fire-and-forget in this simple sample
+                ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text,
+                             endOfMessage: true, CancellationToken.None).Wait();
+            }
+            catch
+            {
+                dead.Add(ws);
+            }
+        }
+
+        // remove dead connections
+        foreach (var d in dead)
+        {
+            clients.Remove(d);
+            try { d.Dispose(); } catch { }
+        }
+    }
+}
+//---------------------------------------------------------------------------------------------------------------------
+//-------------------------------START WEB SERVER ON ws://127.0.0.1.:8080/stream
+//---------------------------------------------------------------------------------------------------------------------
+
+void StartWebSocketServer()
+{
+    Task.Run(async () =>
+    {
+        var listener = new HttpListener();
+        //only localhost
+        listener.Prefixes.Add($"http://127.0.0.1:{httpPort}/");
+        try
+        {
+            listener.Start();
+        }
+        catch (HttpListenerException ex)
+        {
+            Console.WriteLine("Error: could not start Websocket server.");
+            Console.WriteLine("you may need to run administrator ro reserve the URl.");
+            Console.WriteLine(ex.Message);
+            return;
+        }
+
+        Console.WriteLine($"Websocket server listtening at ws://127.0.0.1:{httpPort}/stream");
+
+        while (true)
+        {
+            HttpListenerContext ctx;
+            try
+            {
+                ctx = await listener.GetContextAsync();
+            }
+            catch
+            {
+                break; //listener stopped
+            }
+
+            //only accept Websocket upgrades on /stream
+            if (ctx.Request.IsWebSocketRequest && ctx.Request.RawUrl == "/stream")
+            {
+                try
+                {
+                    var wsContext = await ctx.AcceptWebSocketAsync(subProtocol: null);
+                    var ws = wsContext.WebSocket;
+
+                    lock (clientslock) clients.Add(ws);
+
+                    //background loop to detect close
+                    _ = Task.Run(async () =>
+                    {
+                        var buffer = new byte[1024];
+                        try
+                        {
+                            while (ws.State == WebSocketState.Open)
+                            {
+                                var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                                if (result.MessageType == WebSocketMessageType.Close)
+                                    break;
+                            }
+                        }
+                        catch
+                        {
+                            //ignore
+                        }
+                        finally
+                        {
+                            lock (clientslock) clients.Remove(ws);
+                            try { ws.Dispose(); } catch { }
+                        }
+
+
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"WebSocket accept error: {ex.Message}");
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.Close();
+                }
+            }
+            else
+            {
+                //For non-Websocket or wrong path, reutn a simple message
+                ctx.Response.StatusCode = 200;
+                string msg = "websocket endpoint is ws://127.0.0.1:8080/stream";
+                byte[] data = Encoding.UTF8.GetBytes(msg);
+                ctx.Response.OutputStream.Write(data, 0, data.Length);
+                ctx.Response.OutputStream.Close();
+            }
+        }
+
+
+
+
+
+    });
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+    
+    
+
+
