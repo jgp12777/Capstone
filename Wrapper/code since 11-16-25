@@ -1,5 +1,5 @@
 
-
+using System;
 using System.Net.Sockets; 
 using System.Text;       
 using System.Globalization;
@@ -7,8 +7,7 @@ using System.Net;
 using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Linq.Expressions;
-using System.Runtime.CompilerServices;
+using System.Collections.Generic;
 
 //---------------------------------------------------------------------------------
 //------------------------simple settings------------------------------------------
@@ -47,15 +46,17 @@ Console.WriteLine("------------------------------------------------");
 Console.WriteLine("BrainWrapper (UDP → filtered → WebSocket + console)");
 Console.WriteLine($"UDP in:           :{udpPort}");
 Console.WriteLine($"WebSocket out:    ws://127.0.0.1:{httpPort}/stream");
+Console.WriteLine($"HTTP:            http://127.0.0.1:{httpPort}/state , /healthz");
 Console.WriteLine("Send:             action,confidence   e.g.  push,0.82");
 Console.WriteLine($"Debounce:         {DebounceMs} ms");
 Console.WriteLine($"Rate limit:       {rateHz} Hz");
 Console.WriteLine("------------------------------------------------");
 
+
 //---------------------------------------------------------------------------------
 //----------------------------------Start websocket server-------------------------
 //---------------------------------------------------------------------------------
-StartWebSocketServer();
+StartHttpAndWebSocketServer();
 
 using var udp = new UdpClient(udpPort);
 
@@ -79,8 +80,8 @@ while (true)
             var parts = text.Split(',');
             if (parts.Length != 2) continue; //ignore garbage
 
-            string action = parts[0].ToLowerInvariant(); //nomralize actions
-            if (!double.TryParse(parts[1], out var conf)) continue; // divide the confidense as a number
+            string action = parts[0].Trim().ToLowerInvariant(); //nomralize actions
+            if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var conf)) continue; // divide the confidense as a number
             lastConfidence = conf;
 
             //----------------------------filters----------------------------------------------------------------------------
@@ -114,6 +115,7 @@ while (true)
                 if (dwellMs >= DebounceMs && active != candidate)
                 {
                     active = candidate; // passed debounce time makes it officiall
+                    activeSince = now; //reset duration timer
                 }
             }
         }
@@ -220,40 +222,37 @@ async Task BroadcastAsync(string json)
 //-------------------------------START WEB SERVER ON ws://127.0.0.1.:8080/stream
 //---------------------------------------------------------------------------------------------------------------------
 
-void StartWebSocketServer()
+// Starts a localhost HttpListener that serves:
+// - WebSocket on /stream
+// - HTTP JSON on /state
+// - HTTP health on /healthz
+void StartHttpAndWebSocketServer()
 {
     Task.Run(async () =>
     {
         var listener = new HttpListener();
-        //only localhost
-        listener.Prefixes.Add($"http://127.0.0.1:{httpPort}/");
+        listener.Prefixes.Add($"http://127.0.0.1:{httpPort}/"); // localhost-only
         try
         {
             listener.Start();
         }
         catch (HttpListenerException ex)
         {
-            Console.WriteLine("Error: could not start Websocket server.");
-            Console.WriteLine("you may need to run administrator ro reserve the URl.");
+            Console.WriteLine("Error: could not start HTTP/WS server.");
+            Console.WriteLine("You may need to run as Administrator or reserve the URL.");
             Console.WriteLine(ex.Message);
             return;
         }
 
-        Console.WriteLine($"Websocket server listtening at ws://127.0.0.1:{httpPort}/stream");
+        Console.WriteLine($"HTTP/WS listening on http://127.0.0.1:{httpPort}/  (WS: /stream, HTTP: /state, /healthz)");
 
         while (true)
         {
             HttpListenerContext ctx;
-            try
-            {
-                ctx = await listener.GetContextAsync();
-            }
-            catch
-            {
-                break; //listener stopped
-            }
+            try { ctx = await listener.GetContextAsync(); }
+            catch { break; } // listener stopped
 
-            //only accept Websocket upgrades on /stream
+            // 1) WebSocket endpoint
             if (ctx.Request.IsWebSocketRequest && ctx.Request.RawUrl == "/stream")
             {
                 try
@@ -263,7 +262,7 @@ void StartWebSocketServer()
 
                     lock (clientslock) clients.Add(ws);
 
-                    //background loop to detect close
+                    // background loop to detect close
                     _ = Task.Run(async () =>
                     {
                         var buffer = new byte[1024];
@@ -272,21 +271,15 @@ void StartWebSocketServer()
                             while (ws.State == WebSocketState.Open)
                             {
                                 var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-                                if (result.MessageType == WebSocketMessageType.Close)
-                                    break;
+                                if (result.MessageType == WebSocketMessageType.Close) break;
                             }
                         }
-                        catch
-                        {
-                            //ignore
-                        }
+                        catch { /* ignore */ }
                         finally
                         {
                             lock (clientslock) clients.Remove(ws);
                             try { ws.Dispose(); } catch { }
                         }
-
-
                     });
                 }
                 catch (Exception ex)
@@ -295,25 +288,61 @@ void StartWebSocketServer()
                     ctx.Response.StatusCode = 500;
                     ctx.Response.Close();
                 }
+                continue;
             }
-            else
+
+            // 2) HTTP: /state -> current JSON snapshot
+            if (ctx.Request.HttpMethod == "GET" && ctx.Request.RawUrl == "/state")
+            {
+                string json = BuildJson(
+                    active,
+                    lastConfidence,
+                    (int)Math.Max(0, (DateTime.UtcNow - activeSince).TotalMilliseconds));
+
+                byte[] body = Encoding.UTF8.GetBytes(json);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentEncoding = Encoding.UTF8;
+                await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
+                ctx.Response.OutputStream.Close();
+                continue;
+            }
+
+            // 3) HTTP: /healthz -> {"status":"ok"}
+            if (ctx.Request.HttpMethod == "GET" && ctx.Request.RawUrl == "/healthz")
+            {
+                const string ok = "{\"status\":\"ok\"}";
+                byte[] body = Encoding.UTF8.GetBytes(ok);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentEncoding = Encoding.UTF8;
+                await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
+                ctx.Response.OutputStream.Close();
+                continue;
+            }
+
+            // 4) Anything else -> small info text
+            {
+                string info = $"Endpoints: ws /stream , http GET /state , GET /healthz";
+                byte[] body = Encoding.UTF8.GetBytes(info);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "text/plain";
+                await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
+                ctx.Response.OutputStream.Close();
+            }
+            
             {
                 //For non-Websocket or wrong path, reutn a simple message
                 ctx.Response.StatusCode = 200;
-                string msg = "websocket endpoint is ws://127.0.0.1:8080/stream";
+                string msg = $"websocket endpoint is ws://127.0.0.1:{httpPort}/stream";
                 byte[] data = Encoding.UTF8.GetBytes(msg);
                 ctx.Response.OutputStream.Write(data, 0, data.Length);
                 ctx.Response.OutputStream.Close();
             }
         }
-
-
-
-
-
     });
-
 }
+
 
 
 
