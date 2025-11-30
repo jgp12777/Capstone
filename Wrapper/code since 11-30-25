@@ -8,6 +8,9 @@ using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Linq;
+
 
 //---------------------------------------------------------------------------------
 //------------------------simple settings------------------------------------------
@@ -20,6 +23,18 @@ int rateHz = 15;        // cap frequency
 int udpPort = 7400;
 int httpPort = 8080;   // used by the WebSocket server (ws://127.0.0.1:8080/stream)
 
+bool keyboardMode = false;  // default: OFF for safety
+// Parse CLI flags: --keys to enable, --no-keys to force disable
+foreach (var arg in args)
+{
+    if (arg.Equals("--keys", StringComparison.OrdinalIgnoreCase))
+        keyboardMode = true;
+    else if (arg.Equals("--no-keys", StringComparison.OrdinalIgnoreCase))
+        keyboardMode = false;
+}
+
+
+
 //---------------------------------------------------------------------------------
 //-----------------------Status Variables------------------------------------------
 //---------------------------------------------------------------------------------
@@ -27,8 +42,12 @@ int httpPort = 8080;   // used by the WebSocket server (ws://127.0.0.1:8080/stre
 string active = "neutral";  // confirmed clean action
 string candidate = "neutral"; //potential new action 
 DateTime candidateSince = DateTime.UtcNow; //when we start considering the action
-double lastConfidence =0.0;     // last seen confidence
+double lastConfidence = 0.0;     // last seen confidence
 DateTime activeSince = DateTime.UtcNow; //When currect action become active
+string lastSource = "csv"; // "osc" when we parse OSC successfully
+ushort currentKeyDown = 0;  // which virtual key is currently held (0 = none)
+
+
 
 //rate limits
 int intervalMs = Math.Max(1,(int)Math.Round(1000.0 / rateHz));
@@ -50,6 +69,7 @@ Console.WriteLine($"HTTP:            http://127.0.0.1:{httpPort}/state , /health
 Console.WriteLine("Send:             action,confidence   e.g.  push,0.82");
 Console.WriteLine($"Debounce:         {DebounceMs} ms");
 Console.WriteLine($"Rate limit:       {rateHz} Hz");
+Console.WriteLine($"Keyboard mode:    {(keyboardMode ? "ON  (--keys)" : "OFF (default, use --keys)")}"); 
 Console.WriteLine("------------------------------------------------");
 
 
@@ -76,13 +96,28 @@ while (true)
 
             var res = await udp.ReceiveAsync(); //1 UDP packet
 
-            string text = Encoding.UTF8.GetString(res.Buffer).Trim(); //byte to string
-            var parts = text.Split(',');
-            if (parts.Length != 2) continue; //ignore garbage
+            string action;
+            double conf;
 
-            string action = parts[0].Trim().ToLowerInvariant(); //nomralize actions
-            if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var conf)) continue; // divide the confidense as a number
-            lastConfidence = conf;
+            // 1) Try OSC (binary datagram → address + typetags + args)
+            if (TryParseOsc(res.Buffer, out action, out conf))
+            {
+                lastSource = "osc";
+                lastConfidence = conf;
+            }
+            else
+            {
+                // 2) Fallback to CSV: "action,confidence"
+                string text = Encoding.UTF8.GetString(res.Buffer).Trim();
+                var parts = text.Split(',');
+                if (parts.Length != 2) continue;
+
+                action = parts[0].Trim().ToLowerInvariant();
+                if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out conf)) continue;
+
+                lastSource = "csv";
+                lastConfidence = conf;
+            }
 
             //----------------------------filters----------------------------------------------------------------------------
 
@@ -114,9 +149,11 @@ while (true)
                 var dwellMs = (now - candidateSince).TotalMilliseconds;
                 if (dwellMs >= DebounceMs && active != candidate)
                 {
-                    active = candidate; // passed debounce time makes it officiall
-                    activeSince = now; //reset duration timer
+                    active = candidate;      // passed debounce time makes it official
+                    activeSince = now;       // reset duration timer
+                    UpdateKeyboard(active);  //key sync keyboard with new action
                 }
+
             }
         }
     
@@ -132,7 +169,7 @@ while (true)
 
             // Build JSON event for WebSocket clients
             int durationMs = (int)Math.Max(0, (now - activeSince).TotalMilliseconds);
-            string json = BuildJson(active, lastConfidence, durationMs);
+            string json = BuildJson(active, lastConfidence, durationMs, lastSource);
 
             // Console: only print if it changed
             if (line != lastPrintedLine)
@@ -164,10 +201,9 @@ catch (Exception ex)
 //-----------------------------------------------------------------------
 // HELPER: BUILD JSON STRING
 //-----------------------------------------------------------------------
-string BuildJson(string action, double conf, int durationMs)
+string BuildJson(string action, double conf, int durationMs, string source)
 {
     long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    // minimal JSON, no external libs
     var sb = new StringBuilder();
     sb.Append('{');
     sb.Append("\"ts\":").Append(ts).Append(',');
@@ -175,10 +211,11 @@ string BuildJson(string action, double conf, int durationMs)
     sb.Append("\"action\":\"").Append(action).Append("\",");
     sb.Append("\"confidence\":").Append(conf.ToString("0.###", CultureInfo.InvariantCulture)).Append(',');
     sb.Append("\"durationMs\":").Append(durationMs).Append(',');
-    sb.Append("\"raw\":{\"source\":\"csv\"}");
+    sb.Append("\"raw\":{\"source\":\"").Append(source).Append("\"}");
     sb.Append('}');
     return sb.ToString();
 }
+
 
 //-----------------------------------------------------------------------
 // HELPER: bROADCAST A json message to all websocket clients
@@ -218,6 +255,125 @@ async Task BroadcastAsync(string json)
         }
     }
 }
+// Try to parse an OSC packet into (action, confidence).
+// Also logs address, tags, and argument values so we can see what Emotiv sends.
+bool TryParseOsc(byte[] data, out string action, out double conf)
+{
+    action = "neutral";
+    conf = 0.0;
+
+    try
+    {
+        int i = 0;
+
+        // 1) Address (e.g. "/Emotiv/MentalCommand")
+        string addr = ReadOscString(data, ref i);
+        Console.WriteLine($"[OSC-ADDR] {addr}");
+
+        // 2) Typetags (e.g. ",sf" meaning: string, float)
+        if (i >= data.Length || data[i] != (byte)',')
+        {
+            Console.WriteLine("[OSC] no typetags, not OSC?");
+            return false;
+        }
+
+        string tags = ReadOscString(data, ref i);
+        Console.WriteLine($"[OSC-TAGS] {tags}");
+
+        // 3) Read arguments according to typetags
+        var values = new List<object>();
+
+        for (int t = 1; t < tags.Length; t++) // skip leading ','
+        {
+            char tag = tags[t];
+            switch (tag)
+            {
+                case 's':
+                    {
+                        string s = ReadOscString(data, ref i);
+                        values.Add(s);
+                        Console.WriteLine($"[OSC-ARG] string: {s}");
+                        break;
+                    }
+                case 'f':
+                    {
+                        float f = ReadOscFloatBE(data, ref i);
+                        values.Add(f);
+                        Console.WriteLine($"[OSC-ARG] float: {f}");
+                        break;
+                    }
+                default:
+                    // skip/align for unsupported types
+                    Align4(ref i);
+                    Console.WriteLine($"[OSC-ARG] unsupported tag '{tag}', skipping");
+                    break;
+            }
+        }
+
+        // 4) Simple mapping:
+        //    - first string  -> action
+        //    - first float   -> confidence
+        string? parsedAction = null;
+        float?  parsedFloat  = null;
+
+        foreach (var v in values)
+        {
+            if (v is string s && parsedAction == null)
+                parsedAction = s;
+            else if (v is float f && !parsedFloat.HasValue)
+                parsedFloat = f;
+        }
+
+        if (!string.IsNullOrWhiteSpace(parsedAction) && parsedFloat.HasValue)
+        {
+            action = parsedAction!.Trim().ToLowerInvariant();
+            conf = parsedFloat.Value;
+            Console.WriteLine($"[OSC-PARSED] action={action}, conf={conf:0.00}");
+            return true;
+        }
+
+        Console.WriteLine("[OSC] did not find both string action and float confidence");
+        return false;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[OSC-ERROR] {ex.Message}");
+        return false;
+    }
+
+    // ---------- helpers below ----------
+
+    static string ReadOscString(byte[] buf, ref int idx)
+    {
+        int start = idx;
+        while (idx < buf.Length && buf[idx] != 0) idx++;
+        string s = Encoding.ASCII.GetString(buf, start, idx - start);
+        // skip nulls
+        while (idx < buf.Length && buf[idx] == 0) idx++;
+        Align4(ref idx);
+        return s;
+    }
+
+    // OSC floats are big-endian (network order)
+    static float ReadOscFloatBE(byte[] buf, ref int idx)
+    {
+        if (idx + 4 > buf.Length) return 0f;
+        byte b0 = buf[idx], b1 = buf[idx + 1], b2 = buf[idx + 2], b3 = buf[idx + 3];
+        idx += 4;
+
+        if (BitConverter.IsLittleEndian)
+            return BitConverter.ToSingle(new byte[] { b3, b2, b1, b0 }, 0);
+        return BitConverter.ToSingle(new byte[] { b0, b1, b2, b3 }, 0);
+    }
+
+    static void Align4(ref int idx)
+    {
+        int mod = idx % 4;
+        if (mod != 0) idx += (4 - mod);
+    }
+}
+
+
 //---------------------------------------------------------------------------------------------------------------------
 //-------------------------------START WEB SERVER ON ws://127.0.0.1.:8080/stream
 //---------------------------------------------------------------------------------------------------------------------
@@ -231,7 +387,8 @@ void StartHttpAndWebSocketServer()
     Task.Run(async () =>
     {
         var listener = new HttpListener();
-        listener.Prefixes.Add($"http://127.0.0.1:{httpPort}/"); // localhost-only
+        // localhost-only for safety
+        listener.Prefixes.Add($"http://127.0.0.1:{httpPort}/");
         try
         {
             listener.Start();
@@ -252,7 +409,7 @@ void StartHttpAndWebSocketServer()
             try { ctx = await listener.GetContextAsync(); }
             catch { break; } // listener stopped
 
-            // 1) WebSocket endpoint
+            // 1) WebSocket endpoint: /stream
             if (ctx.Request.IsWebSocketRequest && ctx.Request.RawUrl == "/stream")
             {
                 try
@@ -297,7 +454,8 @@ void StartHttpAndWebSocketServer()
                 string json = BuildJson(
                     active,
                     lastConfidence,
-                    (int)Math.Max(0, (DateTime.UtcNow - activeSince).TotalMilliseconds));
+                    (int)Math.Max(0, (DateTime.UtcNow - activeSince).TotalMilliseconds),
+                    lastSource);
 
                 byte[] body = Encoding.UTF8.GetBytes(json);
                 ctx.Response.StatusCode = 200;
@@ -330,32 +488,108 @@ void StartHttpAndWebSocketServer()
                 await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
                 ctx.Response.OutputStream.Close();
             }
-            
-            {
-                //For non-Websocket or wrong path, reutn a simple message
-                ctx.Response.StatusCode = 200;
-                string msg = $"websocket endpoint is ws://127.0.0.1:{httpPort}/stream";
-                byte[] data = Encoding.UTF8.GetBytes(msg);
-                ctx.Response.OutputStream.Write(data, 0, data.Length);
-                ctx.Response.OutputStream.Close();
-            }
         }
     });
 }
 
+// -----------------------------------------------------------------------
+// KEYBOARD EMULATION 
+// Maps actions to WASD using Win32 SendInput.
+// -----------------------------------------------------------------------
+
+void UpdateKeyboard(string newAction)
+{
+    if (!keyboardMode)
+        return;
+
+    // Map action -> virtual key code
+    ushort? newKey = MapActionToKey(newAction);
+
+    // If we have an old key held down and it's changing or going neutral -> release old key
+    if (currentKeyDown != 0 && (!newKey.HasValue || newKey.Value != currentKeyDown))
+    {
+        SendKey(currentKeyDown, KeyEventFlags.KEYUP);
+        currentKeyDown = 0;
+    }
+
+    // If new key is non-neutral and different -> press new key
+    if (newKey.HasValue && newKey.Value != 0 && newKey.Value != currentKeyDown)
+    {
+        SendKey(newKey.Value, KeyEventFlags.KEYDOWN);
+        currentKeyDown = newKey.Value;
+    }
+}
+
+// Map mental action -> virtual-key code (WASD)
+ushort? MapActionToKey(string action)
+{
+    switch (action.ToLowerInvariant())
+    {
+        case "push":  return 0x57; // 'W'
+        case "pull":  return 0x53; // 'S'
+        case "left":  return 0x41; // 'A'
+        case "right": return 0x44; // 'D'
+        default:      return null; // neutral or unsupported -> no key
+    }
+}
+
+// Sends a single key press or release using SendInput.
+void SendKey(ushort vk, KeyEventFlags flags)
+{
+    INPUT[] inputs = new INPUT[1];
+    inputs[0].type = 1; // INPUT_KEYBOARD
+    inputs[0].U.ki.wVk = vk;
+    inputs[0].U.ki.wScan = 0;
+    inputs[0].U.ki.dwFlags = (uint)flags;
+    inputs[0].U.ki.time = 0;
+    inputs[0].U.ki.dwExtraInfo = IntPtr.Zero;
+
+    uint result = SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+    if (result == 0)
+    {
+        // optional debug:
+        // Console.WriteLine($"SendInput failed for vk={vk}, flags={flags}, error={Marshal.GetLastWin32Error()}");
+    }
+}
+
+// ---- Win32 interop for SendInput ----
+
+[DllImport("user32.dll", SetLastError = true)]
+static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+[StructLayout(LayoutKind.Sequential)]
+struct INPUT
+{
+    public uint type;
+    public InputUnion U;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+struct InputUnion
+{
+    [FieldOffset(0)]
+    public KEYBDINPUT ki;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+struct KEYBDINPUT
+{
+    public ushort wVk;
+    public ushort wScan;
+    public uint dwFlags;
+    public uint time;
+    public IntPtr dwExtraInfo;
+}
+
+[Flags]
+enum KeyEventFlags : uint
+{
+    KEYDOWN  = 0x0000,
+    KEYUP    = 0x0002,
+    EXTENDED = 0x0001
+}
 
 
 
-
-
-
-
-
-
-
-
-
-    
-    
 
 
