@@ -1,7 +1,8 @@
 
 using System;
 using System.Net.Sockets; 
-using System.Text;       
+using System.Text; 
+using System.Text.Json;      
 using System.Globalization;
 using System.Net;
 using System.Net.WebSockets;
@@ -78,7 +79,8 @@ Console.WriteLine("------------------------------------------------");
 //---------------------------------------------------------------------------------
 StartHttpAndWebSocketServer();
 
-using var udp = new UdpClient(udpPort);
+using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, udpPort));
+
 
 
 
@@ -95,6 +97,9 @@ while (true)
 
 
             var res = await udp.ReceiveAsync(); //1 UDP packet
+            const int MaxPacket = 2048; // tune as needed
+            if (res.Buffer.Length == 0 || res.Buffer.Length > MaxPacket)
+                continue;
 
             string action;
             double conf;
@@ -203,18 +208,19 @@ catch (Exception ex)
 //-----------------------------------------------------------------------
 string BuildJson(string action, double conf, int durationMs, string source)
 {
-    long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    var sb = new StringBuilder();
-    sb.Append('{');
-    sb.Append("\"ts\":").Append(ts).Append(',');
-    sb.Append("\"type\":\"mental_command\",");
-    sb.Append("\"action\":\"").Append(action).Append("\",");
-    sb.Append("\"confidence\":").Append(conf.ToString("0.###", CultureInfo.InvariantCulture)).Append(',');
-    sb.Append("\"durationMs\":").Append(durationMs).Append(',');
-    sb.Append("\"raw\":{\"source\":\"").Append(source).Append("\"}");
-    sb.Append('}');
-    return sb.ToString();
+    var payload = new
+    {
+        ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        type = "mental_command",
+        action = action,
+        confidence = conf,
+        durationMs = durationMs,
+        raw = new { source = source }
+    };
+
+    return JsonSerializer.Serialize(payload);
 }
+
 
 
 //-----------------------------------------------------------------------
@@ -223,38 +229,43 @@ string BuildJson(string action, double conf, int durationMs, string source)
 async Task BroadcastAsync(string json)
 {
     byte[] bytes = Encoding.UTF8.GetBytes(json);
-    var dead = new System.Collections.Generic.List<WebSocket>();
 
+    List<WebSocket> snapshot;
     lock (clientslock)
-    {
-        foreach (var ws in clients)
-        {
-            if (ws.State != WebSocketState.Open)
-            {
-                dead.Add(ws);
-                continue;
-            }
+        snapshot = clients.Where(ws => ws.State == WebSocketState.Open).ToList();
 
-            try
-            {
-                // Fire-and-forget in this simple sample
-                ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text,
-                             endOfMessage: true, CancellationToken.None).Wait();
-            }
-            catch
-            {
-                dead.Add(ws);
-            }
+    var dead = new List<WebSocket>();
+
+    foreach (var ws in snapshot)
+    {
+        try
+        {
+            await ws.SendAsync(new ArraySegment<byte>(bytes),
+                               WebSocketMessageType.Text,
+                               endOfMessage: true,
+                               CancellationToken.None);
+        }
+        catch
+        {
+            dead.Add(ws);
+        }
+    }
+
+    if (dead.Count > 0)
+    {
+        lock (clientslock)
+        {
+            foreach (var d in dead)
+                clients.Remove(d);
         }
 
-        // remove dead connections
         foreach (var d in dead)
         {
-            clients.Remove(d);
             try { d.Dispose(); } catch { }
         }
     }
 }
+
 // Try to parse an OSC packet into (action, confidence).
 // Also logs address, tags, and argument values so we can see what Emotiv sends.
 bool TryParseOsc(byte[] data, out string action, out double conf)
@@ -344,15 +355,29 @@ bool TryParseOsc(byte[] data, out string action, out double conf)
     // ---------- helpers below ----------
 
     static string ReadOscString(byte[] buf, ref int idx)
-    {
-        int start = idx;
-        while (idx < buf.Length && buf[idx] != 0) idx++;
-        string s = Encoding.ASCII.GetString(buf, start, idx - start);
-        // skip nulls
-        while (idx < buf.Length && buf[idx] == 0) idx++;
-        Align4(ref idx);
-        return s;
-    }
+{
+    int start = idx;
+
+    // Find null terminator
+    while (idx < buf.Length && buf[idx] != 0) idx++;
+    if (idx >= buf.Length)
+        throw new FormatException("OSC string missing terminator");
+
+    string s = Encoding.ASCII.GetString(buf, start, idx - start);
+
+    // Move past the terminator byte
+    idx++;
+
+    // Pad to 4-byte boundary exactly once (OSC rule)
+    int pad = (4 - (idx % 4)) % 4;
+    idx += pad;
+
+    if (idx > buf.Length)
+        throw new FormatException("OSC string padding overrun");
+
+    return s;
+}
+
 
     // OSC floats are big-endian (network order)
     static float ReadOscFloatBE(byte[] buf, ref int idx)
@@ -588,8 +613,3 @@ enum KeyEventFlags : uint
     KEYUP    = 0x0002,
     EXTENDED = 0x0001
 }
-
-
-
-
-
