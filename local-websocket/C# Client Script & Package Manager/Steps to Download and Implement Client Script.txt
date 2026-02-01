@@ -1,0 +1,43 @@
+1️⃣ Download / install NativeWebSocket from GitHub
+We’re going to use Unity’s Package Manager to pull it directly from the GitHub repository. This is the easiest way.
+Step-by-step:
+	1	Open your Unity project.
+	2	Open Package Manager
+	◦	In Unity Editor → top menu: Window → Package Manager
+	3	Add package from Git URL
+	◦	Click the + button (top left of Package Manager)
+	◦	Select Add package from git URL…
+	4	Enter the GitHub URL https://github.com/endel/NativeWebSocket.git
+	5	
+	◦	Click Add
+	6	Wait for it to import
+	◦	Unity will download the package and make it available for your scripts.
+	◦	You don’t need to manually download anything.
+✅ Now using NativeWebSocket; works in your script.
+
+Notes:
+	•	Make sure you are online when you do this.
+	•	If Unity gives an error about Git, make sure Git is installed on your system and available in PATH.
+
+2️⃣ Where to put the BCIWebSocketClient.cs script
+	1	In your Unity project, go to the Assets folder.
+	◦	You can see it in the Project window in Unity.
+	2	Create a folder for scripts (optional but recommended)
+	◦	Right-click → Create → Folder → name it Scripts
+	3	Create or import your C# script
+	◦	Right-click the Scripts folder → Create → C# Script
+	◦	Name it BCIWebSocketClient
+	◦	Open it and replace all code with the script I provided
+	◦	OR drag-and-drop an existing .cs file into the Scripts folder
+	4	Attach the script to a GameObject
+	◦	Select a GameObject in your scene (like a Cube)
+	◦	Drag the BCIWebSocketClient script onto the GameObject → it will appear in the Inspector
+	◦	This GameObject is now “listening” to the WebSocket messages
+	5	Optional: adjust parameters in Inspector
+	◦	Server Url → ws://localhost:8080 (default is correct)
+	◦	Confidence Threshold → default 0.6, adjust as needed
+
+✅ Quick check
+	•	Server running: node bci_sim_server.js
+	•	Unity scene running with cube & script attached → cube should react to simulated commands
+	•	Unity console → logs incoming messages and actions

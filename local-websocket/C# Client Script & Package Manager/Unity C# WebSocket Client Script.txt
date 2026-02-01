@@ -1,0 +1,127 @@
+using System;
+using UnityEngine;
+using NativeWebSocket;  // Make sure you have installed the NativeWebSocket package
+
+// Class to match the JSON structure from your JS server
+[Serializable]
+public class MentalCommand
+{
+    public string type;
+    public string command;
+    public float confidence;
+    public long timestamp;
+}
+
+public class BCIWebSocketClient : MonoBehaviour
+{
+    [Header("WebSocket Settings")]
+    public string serverUrl = "ws://localhost:8080"; // Node.js BCI simulator
+
+    [Header("BCI Settings")]
+    public float confidenceThreshold = 0.6f; // Only trigger actions above this confidence
+
+    private WebSocket websocket;
+
+    async void Start()
+    {
+        // Create WebSocket
+        websocket = new WebSocket(serverUrl);
+
+        // Event: Connection opened
+        websocket.OnOpen += () =>
+        {
+            Debug.Log("Connected to BCI server!");
+        };
+
+        // Event: Error occurred
+        websocket.OnError += (e) =>
+        {
+            Debug.LogError("WebSocket error: " + e);
+        };
+
+        // Event: Connection closed
+        websocket.OnClose += (e) =>
+        {
+            Debug.Log("WebSocket closed!");
+        };
+
+        // Event: Message received from server
+        websocket.OnMessage += (bytes) =>
+        {
+            string message = System.Text.Encoding.UTF8.GetString(bytes);
+            Debug.Log("Raw message: " + message);
+
+            try
+            {
+                // Parse JSON into MentalCommand object
+                MentalCommand data = JsonUtility.FromJson<MentalCommand>(message);
+
+                // Only handle mental_command messages
+                if (data.type == "mental_command")
+                {
+                    // Check confidence threshold
+                    if (data.confidence >= confidenceThreshold)
+                    {
+                        HandleCommand(data.command);
+                    }
+                    else
+                    {
+                        Debug.Log("Command ignored due to low confidence: " + data.command);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("Failed to parse message: " + ex.Message);
+            }
+        };
+
+        // Connect to the WebSocket server
+        await websocket.Connect();
+    }
+
+    void Update()
+    {
+#if !UNITY_WEBGL || UNITY_EDITOR
+        websocket?.DispatchMessageQueue(); // Required for NativeWebSocket in Editor / non-WebGL
+#endif
+    }
+
+    async void OnApplicationQuit()
+    {
+        if (websocket != null)
+        {
+            await websocket.Close();
+        }
+    }
+
+    // Map commands to actions (currently moves the GameObject)
+    private void HandleCommand(string command)
+    {
+        switch (command)
+        {
+            case "push":
+                Debug.Log("Action: Move Forward");
+                transform.Translate(Vector3.forward * Time.deltaTime * 2f);
+                break;
+            case "pull":
+                Debug.Log("Action: Move Backward");
+                transform.Translate(Vector3.back * Time.deltaTime * 2f);
+                break;
+            case "left":
+                Debug.Log("Action: Move Left");
+                transform.Translate(Vector3.left * Time.deltaTime * 2f);
+                break;
+            case "right":
+                Debug.Log("Action: Move Right");
+                transform.Translate(Vector3.right * Time.deltaTime * 2f);
+                break;
+            case "neutral":
+                Debug.Log("Action: No movement");
+                break;
+            default:
+                Debug.Log("Unknown command: " + command);
+                break;
+        }
+    }
+}
