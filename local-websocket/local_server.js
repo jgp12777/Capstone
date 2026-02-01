@@ -1,15 +1,12 @@
-// bci_sim_server.js
-// Fully testable BCI simulator WebSocket server
-
 import { WebSocketServer } from "ws";
 
 // Create WebSocket server on port 8080
 const wss = new WebSocketServer({ port: 8080 });
 
-// Predefined mental commands for testing
+// Predefined mental commands for testing (can be changed based on requirements for project)
 const commands = ["push", "pull", "left", "right", "neutral"];
 
-// Optional: predefined pattern for repeatable testing
+// Optional: predefined pattern for repeatable testing (this can help with testing mental commands)
 const testPattern = [
   { command: "push", confidence: 0.8 },
   { command: "left", confidence: 0.9 },
