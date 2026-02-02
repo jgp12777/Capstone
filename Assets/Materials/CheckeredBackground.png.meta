@@ -147,7 +147,8 @@ TextureImporter:
     secondaryTextures: []
     spriteCustomMetadata:
       entries: []
-    nameFileIdTable: {}
+    nameFileIdTable:
+      CheckeredBackground_0: 3500862318741553929
   mipmapLimitGroupName: 
   pSDRemoveMatte: 0
   userData: 
