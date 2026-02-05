@@ -1,1 +1,0 @@
-This folder serves as the storage space for the UNITY DEMO, with an instruction set to come on how to setup.
