@@ -1,7 +1,6 @@
 //==============================================================================
-// BCI GESTURE CONTROL ORCHESTRATOR v2.0
-// Overhauled with improvements from Wrapper application
-// Extensive debugging and logging added
+// BCI GESTURE CONTROL ORCHESTRATOR v2.1
+// Fixed startup logging and test mode
 //==============================================================================
 
 using System;
@@ -62,7 +61,7 @@ namespace BciOrchestrator
 
     public class LoggingConfig
     {
-        public string Level { get; set; } = "INFO"; // DEBUG, INFO, WARN, ERROR
+        public string Level { get; set; } = "INFO";
         public string LogFile { get; set; } = "./logs/orchestrator.log";
         public int MaxLogSizeMB { get; set; } = 50;
         public bool RotateDaily { get; set; } = true;
@@ -96,7 +95,7 @@ namespace BciOrchestrator
         };
         public LoggingConfig Logging { get; set; } = new();
         public HealthConfig Health { get; set; } = new();
-        public bool UseIntegratedWebSocket { get; set; } = true; // Use C# WS server instead of Node.js
+        public bool UseIntegratedWebSocket { get; set; } = true;
         public bool TestMode { get; set; } = false;
     }
 
@@ -108,22 +107,22 @@ namespace BciOrchestrator
     {
         [JsonPropertyName("ts")]
         public long Ts { get; set; }
-        
+
         [JsonPropertyName("type")]
         public string Type { get; set; } = "mental_command";
-        
+
         [JsonPropertyName("action")]
         public string Action { get; set; } = "neutral";
-        
+
         [JsonPropertyName("confidence")]
         public double Confidence { get; set; }
-        
+
         [JsonPropertyName("durationMs")]
         public int DurationMs { get; set; }
-        
+
         [JsonPropertyName("source")]
         public string Source { get; set; } = "emotiv-osc";
-        
+
         [JsonPropertyName("raw")]
         public Dictionary<string, object> Raw { get; set; } = new();
     }
@@ -132,22 +131,22 @@ namespace BciOrchestrator
     {
         [JsonPropertyName("active")]
         public string Active { get; set; } = "neutral";
-        
+
         [JsonPropertyName("confidence")]
         public double Confidence { get; set; }
-        
+
         [JsonPropertyName("durationMs")]
         public int DurationMs { get; set; }
-        
+
         [JsonPropertyName("source")]
         public string Source { get; set; } = "none";
-        
+
         [JsonPropertyName("timestamp")]
         public long Timestamp { get; set; }
-        
+
         [JsonPropertyName("uptime")]
         public long UptimeMs { get; set; }
-        
+
         [JsonPropertyName("stats")]
         public OrchestratorStats Stats { get; set; } = new();
     }
@@ -156,22 +155,22 @@ namespace BciOrchestrator
     {
         [JsonPropertyName("totalPackets")]
         public long TotalPackets { get; set; }
-        
+
         [JsonPropertyName("totalActions")]
         public long TotalActions { get; set; }
-        
+
         [JsonPropertyName("avgConfidence")]
         public double AvgConfidence { get; set; }
-        
+
         [JsonPropertyName("connectedClients")]
         public int ConnectedClients { get; set; }
-        
+
         [JsonPropertyName("packetsPerSecond")]
         public double PacketsPerSecond { get; set; }
     }
 
     //==========================================================================
-    // LOGGER CLASS - EXTENSIVE DEBUGGING SUPPORT
+    // SIMPLE CONSOLE LOGGER (with immediate flush)
     //==========================================================================
 
     public enum LogLevel
@@ -189,7 +188,6 @@ namespace BciOrchestrator
         private readonly string _logDirectory;
         private string _currentLogFile;
         private DateTime _currentLogDate;
-        private long _currentLogSize;
         private readonly string _componentName;
 
         public Logger(LoggingConfig config, string componentName = "ORCHESTRATOR")
@@ -199,8 +197,12 @@ namespace BciOrchestrator
             _logDirectory = Path.GetDirectoryName(config.LogFile) ?? "./logs";
             _currentLogDate = DateTime.Today;
             _currentLogFile = GetLogFileName();
-            
-            Directory.CreateDirectory(_logDirectory);
+
+            try
+            {
+                Directory.CreateDirectory(_logDirectory);
+            }
+            catch { }
         }
 
         private string GetLogFileName()
@@ -243,19 +245,16 @@ namespace BciOrchestrator
             if (ex != null && _config.IncludeStackTrace)
             {
                 fullMessage += $"\n  Exception: {ex.GetType().Name}: {ex.Message}";
-                fullMessage += $"\n  StackTrace: {ex.StackTrace}";
-                if (ex.InnerException != null)
-                {
-                    fullMessage += $"\n  InnerException: {ex.InnerException.Message}";
-                }
+                if (ex.StackTrace != null)
+                    fullMessage += $"\n  StackTrace: {ex.StackTrace}";
             }
 
             lock (_lock)
             {
-                // Console output with colors
                 if (_config.LogToConsole)
                 {
-                    ConsoleColor color = level switch
+                    ConsoleColor originalColor = Console.ForegroundColor;
+                    Console.ForegroundColor = level switch
                     {
                         LogLevel.DEBUG => ConsoleColor.Gray,
                         LogLevel.INFO => ConsoleColor.White,
@@ -263,13 +262,11 @@ namespace BciOrchestrator
                         LogLevel.ERROR => ConsoleColor.Red,
                         _ => ConsoleColor.White
                     };
-
-                    Console.ForegroundColor = color;
                     Console.WriteLine(fullMessage);
-                    Console.ResetColor();
+                    Console.ForegroundColor = originalColor;
+                    Console.Out.Flush(); // Force immediate output
                 }
 
-                // File output
                 if (_config.LogToFile)
                 {
                     WriteToFile(fullMessage);
@@ -281,47 +278,20 @@ namespace BciOrchestrator
         {
             try
             {
-                // Check for log rotation
                 if (_config.RotateDaily && DateTime.Today != _currentLogDate)
                 {
                     _currentLogDate = DateTime.Today;
                     _currentLogFile = GetLogFileName();
-                    _currentLogSize = 0;
                 }
-
-                // Check for size-based rotation
-                if (_currentLogSize > _config.MaxLogSizeMB * 1024 * 1024)
-                {
-                    string rotatedFile = _currentLogFile.Replace(".log", $"_{DateTime.Now:HHmmss}.log");
-                    if (File.Exists(_currentLogFile))
-                    {
-                        File.Move(_currentLogFile, rotatedFile);
-                    }
-                    _currentLogSize = 0;
-                }
-
                 File.AppendAllText(_currentLogFile, message + Environment.NewLine);
-                _currentLogSize += Encoding.UTF8.GetByteCount(message) + Environment.NewLine.Length;
             }
-            catch
-            {
-                // Silently fail to avoid infinite error loop
-            }
+            catch { }
         }
 
-        // Convenience methods
         public void Debug(string message, string? context = null) => Log(LogLevel.DEBUG, message, context);
         public void Info(string message, string? context = null) => Log(LogLevel.INFO, message, context);
         public void Warn(string message, string? context = null, Exception? ex = null) => Log(LogLevel.WARN, message, context, ex);
         public void Error(string message, string? context = null, Exception? ex = null) => Log(LogLevel.ERROR, message, context, ex);
-
-        // Structured logging for debugging
-        public void LogPacket(string direction, string protocol, string data, string? endpoint = null)
-        {
-            if (!ShouldLog(LogLevel.DEBUG)) return;
-            string endpointStr = endpoint != null ? $" [{endpoint}]" : "";
-            Debug($"PACKET {direction}{endpointStr} ({protocol}): {data.Substring(0, Math.Min(data.Length, 200))}", "NETWORK");
-        }
 
         public void LogStateChange(string from, string to, double confidence, string reason)
         {
@@ -330,9 +300,7 @@ namespace BciOrchestrator
 
         public void LogMetrics(OrchestratorStats stats)
         {
-            Info($"METRICS: packets={stats.TotalPackets}, actions={stats.TotalActions}, " +
-                 $"avgConf={stats.AvgConfidence:F2}, clients={stats.ConnectedClients}, " +
-                 $"pps={stats.PacketsPerSecond:F1}", "METRICS");
+            Info($"METRICS: packets={stats.TotalPackets}, actions={stats.TotalActions}, clients={stats.ConnectedClients}", "METRICS");
         }
 
         public void LogStartup(string component, bool success, string? details = null)
@@ -347,7 +315,7 @@ namespace BciOrchestrator
     }
 
     //==========================================================================
-    // INTEGRATED WEBSOCKET SERVER (from Wrapper improvements)
+    // INTEGRATED WEBSOCKET SERVER
     //==========================================================================
 
     public class IntegratedWebSocketServer
@@ -359,10 +327,7 @@ namespace BciOrchestrator
         private readonly OrchestratorConfig _config;
         private CancellationToken _ct;
         private Func<StateSnapshot>? _getStateSnapshot;
-        
-        // Metrics
         private long _messagesSent = 0;
-        private long _messagesReceived = 0;
         private long _connectionCount = 0;
 
         public int ConnectedClients
@@ -394,38 +359,29 @@ namespace BciOrchestrator
             int port = _config.WebSocket.Port;
 
             _httpListener = new HttpListener();
-            
-            // Handle both localhost and LAN scenarios
-            if (_config.WebSocket.AllowLAN || host == "0.0.0.0")
-            {
-                _httpListener.Prefixes.Add($"http://+:{port}/");
-            }
-            else
-            {
-                _httpListener.Prefixes.Add($"http://{host}:{port}/");
-            }
 
             try
             {
+                if (_config.WebSocket.AllowLAN || host == "0.0.0.0")
+                {
+                    _httpListener.Prefixes.Add($"http://+:{port}/");
+                }
+                else
+                {
+                    _httpListener.Prefixes.Add($"http://{host}:{port}/");
+                }
+
                 _httpListener.Start();
-                _logger.Info($"HTTP/WebSocket server listening on {host}:{port}", "WS-SERVER");
-                _logger.Info($"  WebSocket: ws://{host}:{port}/stream", "WS-SERVER");
-                _logger.Info($"  HTTP GET:  http://{host}:{port}/state", "WS-SERVER");
-                _logger.Info($"  HTTP GET:  http://{host}:{port}/healthz", "WS-SERVER");
-                _logger.Info($"  HTTP POST: http://{host}:{port}/broadcast", "WS-SERVER");
+                _logger.Info($"WebSocket server started on ws://{host}:{port}/stream", "WS-SERVER");
             }
             catch (HttpListenerException ex)
             {
                 _logger.Error($"Failed to start HTTP listener: {ex.Message}", "WS-SERVER", ex);
-                _logger.Warn("You may need to run as Administrator or reserve the URL with: " +
-                           $"netsh http add urlacl url=http://+:{port}/ user=Everyone", "WS-SERVER");
                 throw;
             }
 
-            // Start ping task to keep connections alive
-            _ = Task.Run(() => PingClientsAsync(ct), ct);
+            _ = Task.Run(() => CleanupDeadClientsAsync(ct), ct);
 
-            // Main request loop
             while (!ct.IsCancellationRequested)
             {
                 try
@@ -443,32 +399,26 @@ namespace BciOrchestrator
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error($"Error accepting request: {ex.Message}", "WS-SERVER", ex);
+                    _logger.Debug($"Error accepting request: {ex.Message}", "WS-SERVER");
                 }
             }
 
             _httpListener.Stop();
-            _logger.Info("WebSocket server stopped", "WS-SERVER");
         }
 
         private async Task HandleRequestAsync(HttpListenerContext context)
         {
             string path = context.Request.Url?.AbsolutePath ?? "/";
             string method = context.Request.HttpMethod;
-            string clientIP = context.Request.RemoteEndPoint?.ToString() ?? "unknown";
-
-            _logger.Debug($"Request: {method} {path} from {clientIP}", "WS-SERVER");
 
             try
             {
-                // WebSocket upgrade request
                 if (context.Request.IsWebSocketRequest && path == "/stream")
                 {
                     await HandleWebSocketAsync(context);
                     return;
                 }
 
-                // HTTP endpoints
                 switch (path)
                 {
                     case "/state":
@@ -479,22 +429,12 @@ namespace BciOrchestrator
                         break;
 
                     case "/healthz":
-                        if (method == "GET")
-                            await HandleHealthCheckAsync(context);
-                        else
-                            SendMethodNotAllowed(context);
+                        await SendTextResponseAsync(context, "ok");
                         break;
 
                     case "/broadcast":
                         if (method == "POST")
                             await HandleBroadcastRequestAsync(context);
-                        else
-                            SendMethodNotAllowed(context);
-                        break;
-
-                    case "/metrics":
-                        if (method == "GET")
-                            await HandleMetricsRequestAsync(context);
                         else
                             SendMethodNotAllowed(context);
                         break;
@@ -506,120 +446,60 @@ namespace BciOrchestrator
             }
             catch (Exception ex)
             {
-                _logger.Error($"Error handling request: {ex.Message}", "WS-SERVER", ex);
-                try
-                {
-                    context.Response.StatusCode = 500;
-                    context.Response.Close();
-                }
-                catch { }
+                _logger.Debug($"Error handling request: {ex.Message}", "WS-SERVER");
+                try { context.Response.StatusCode = 500; context.Response.Close(); } catch { }
             }
         }
 
         private async Task HandleWebSocketAsync(HttpListenerContext context)
         {
             WebSocketContext? wsContext = null;
-            
+
             try
             {
                 wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
                 var ws = wsContext.WebSocket;
-                
+
                 _connectionCount++;
-                _logger.Info($"WebSocket client connected (total connections: {_connectionCount})", "WS-SERVER");
+                _logger.Debug($"WebSocket client connected", "WS-SERVER");
 
                 lock (_clientsLock)
                 {
                     _clients.Add(ws);
                 }
 
-                // Send initial state
-                var initialState = _getStateSnapshot?.Invoke();
-                if (initialState != null)
-                {
-                    string json = JsonSerializer.Serialize(initialState);
-                    await SendToClientAsync(ws, json);
-                    _logger.Debug($"Sent initial state to client", "WS-SERVER");
-                }
-
-                // Receive loop
                 var buffer = new byte[_config.WebSocket.BufferSize];
                 while (ws.State == WebSocketState.Open && !_ct.IsCancellationRequested)
                 {
                     try
                     {
                         var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), _ct);
-
                         if (result.MessageType == WebSocketMessageType.Close)
-                        {
-                            _logger.Debug("Client requested close", "WS-SERVER");
                             break;
-                        }
-
-                        if (result.MessageType == WebSocketMessageType.Text)
-                        {
-                            string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                            _messagesReceived++;
-                            _logger.Debug($"Received from client: {message}", "WS-SERVER");
-                            
-                            // Handle client commands if needed
-                            await HandleClientMessageAsync(ws, message);
-                        }
                     }
-                    catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+                    catch
                     {
-                        _logger.Debug("Client disconnected prematurely", "WS-SERVER");
                         break;
                     }
                 }
 
-                // Graceful close
                 if (ws.State == WebSocketState.Open || ws.State == WebSocketState.CloseReceived)
                 {
-                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server closing", CancellationToken.None);
+                    try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None); } catch { }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Warn($"WebSocket client error: {ex.Message}", "WS-SERVER", ex);
+                _logger.Debug($"WebSocket error: {ex.Message}", "WS-SERVER");
             }
             finally
             {
                 if (wsContext != null)
                 {
-                    lock (_clientsLock)
-                    {
-                        _clients.Remove(wsContext.WebSocket);
-                    }
+                    lock (_clientsLock) { _clients.Remove(wsContext.WebSocket); }
                     try { wsContext.WebSocket.Dispose(); } catch { }
                 }
-                _logger.Info($"WebSocket client disconnected (remaining: {ConnectedClients})", "WS-SERVER");
             }
-        }
-
-        private async Task HandleClientMessageAsync(WebSocket ws, string message)
-        {
-            // Handle ping/pong
-            if (message == "ping")
-            {
-                await SendToClientAsync(ws, "pong");
-                return;
-            }
-
-            // Handle state request
-            if (message == "state")
-            {
-                var state = _getStateSnapshot?.Invoke();
-                if (state != null)
-                {
-                    string json = JsonSerializer.Serialize(state);
-                    await SendToClientAsync(ws, json);
-                }
-                return;
-            }
-
-            // Log unknown messages
-            _logger.Debug($"Unknown client message: {message}", "WS-SERVER");
         }
 
         private async Task HandleStateRequestAsync(HttpListenerContext context)
@@ -629,66 +509,19 @@ namespace BciOrchestrator
             await SendJsonResponseAsync(context, json);
         }
 
-        private async Task HandleHealthCheckAsync(HttpListenerContext context)
-        {
-            var health = new
-            {
-                status = "ok",
-                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                connectedClients = ConnectedClients
-            };
-            string json = JsonSerializer.Serialize(health);
-            await SendJsonResponseAsync(context, json);
-        }
-
         private async Task HandleBroadcastRequestAsync(HttpListenerContext context)
         {
             using var reader = new StreamReader(context.Request.InputStream);
             string json = await reader.ReadToEndAsync();
-
-            _logger.Debug($"Broadcast request: {json.Substring(0, Math.Min(json.Length, 100))}", "WS-SERVER");
-
             await BroadcastAsync(json);
-
             context.Response.StatusCode = 200;
             context.Response.Close();
-        }
-
-        private async Task HandleMetricsRequestAsync(HttpListenerContext context)
-        {
-            var metrics = new
-            {
-                messagesSent = _messagesSent,
-                messagesReceived = _messagesReceived,
-                totalConnections = _connectionCount,
-                activeConnections = ConnectedClients
-            };
-            string json = JsonSerializer.Serialize(metrics);
-            await SendJsonResponseAsync(context, json);
         }
 
         private async Task SendInfoPageAsync(HttpListenerContext context)
         {
-            string info = $@"BCI Orchestrator WebSocket Server v2.0
-
-Endpoints:
-  WebSocket: ws://{_config.WebSocket.Host}:{_config.WebSocket.Port}/stream
-  GET  /state   - Current state JSON
-  GET  /healthz - Health check
-  GET  /metrics - Server metrics
-  POST /broadcast - Broadcast message to all clients
-
-Connected Clients: {ConnectedClients}
-Total Connections: {_connectionCount}
-Messages Sent: {_messagesSent}
-Messages Received: {_messagesReceived}";
-
-            byte[] body = Encoding.UTF8.GetBytes(info);
-            context.Response.StatusCode = 200;
-            context.Response.ContentType = "text/plain";
-            context.Response.ContentLength64 = body.Length;
-            await context.Response.OutputStream.WriteAsync(body);
-            context.Response.Close();
+            string info = $"BCI Orchestrator WebSocket Server\nClients: {ConnectedClients}\nEndpoint: ws://127.0.0.1:{_config.WebSocket.Port}/stream";
+            await SendTextResponseAsync(context, info);
         }
 
         private async Task SendJsonResponseAsync(HttpListenerContext context, string json)
@@ -696,7 +529,16 @@ Messages Received: {_messagesReceived}";
             byte[] body = Encoding.UTF8.GetBytes(json);
             context.Response.StatusCode = 200;
             context.Response.ContentType = "application/json";
-            context.Response.ContentEncoding = Encoding.UTF8;
+            context.Response.ContentLength64 = body.Length;
+            await context.Response.OutputStream.WriteAsync(body);
+            context.Response.Close();
+        }
+
+        private async Task SendTextResponseAsync(HttpListenerContext context, string text)
+        {
+            byte[] body = Encoding.UTF8.GetBytes(text);
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = "text/plain";
             context.Response.ContentLength64 = body.Length;
             await context.Response.OutputStream.WriteAsync(body);
             context.Response.Close();
@@ -719,21 +561,15 @@ Messages Received: {_messagesReceived}";
                 clientsCopy = _clients.Where(c => c.State == WebSocketState.Open).ToList();
             }
 
-            var tasks = clientsCopy.Select(async client =>
+            foreach (var client in clientsCopy)
             {
                 try
                 {
                     await client.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
                     Interlocked.Increment(ref _messagesSent);
                 }
-                catch (Exception ex)
-                {
-                    _logger.Debug($"Failed to send to client: {ex.Message}", "WS-SERVER");
-                }
-            });
-
-            await Task.WhenAll(tasks);
-            _logger.Debug($"Broadcasted to {clientsCopy.Count} clients", "WS-SERVER");
+                catch { }
+            }
         }
 
         public async Task BroadcastAsync(BrainEvent brainEvent)
@@ -742,43 +578,19 @@ Messages Received: {_messagesReceived}";
             await BroadcastAsync(json);
         }
 
-        private async Task SendToClientAsync(WebSocket ws, string message)
-        {
-            if (ws.State != WebSocketState.Open) return;
-
-            var buffer = Encoding.UTF8.GetBytes(message);
-            await ws.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
-            Interlocked.Increment(ref _messagesSent);
-        }
-
-        private async Task PingClientsAsync(CancellationToken ct)
+        private async Task CleanupDeadClientsAsync(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
-                await Task.Delay(_config.WebSocket.PingIntervalMs, ct);
-
-                List<WebSocket> deadClients = new();
-
+                await Task.Delay(30000, ct);
                 lock (_clientsLock)
                 {
-                    foreach (var client in _clients)
+                    var dead = _clients.Where(c => c.State != WebSocketState.Open).ToList();
+                    foreach (var d in dead)
                     {
-                        if (client.State != WebSocketState.Open)
-                        {
-                            deadClients.Add(client);
-                        }
+                        _clients.Remove(d);
+                        try { d.Dispose(); } catch { }
                     }
-
-                    foreach (var dead in deadClients)
-                    {
-                        _clients.Remove(dead);
-                        try { dead.Dispose(); } catch { }
-                    }
-                }
-
-                if (deadClients.Count > 0)
-                {
-                    _logger.Debug($"Cleaned up {deadClients.Count} dead connections", "WS-SERVER");
                 }
             }
         }
@@ -786,7 +598,6 @@ Messages Received: {_messagesReceived}";
         public void Stop()
         {
             _httpListener?.Stop();
-            
             lock (_clientsLock)
             {
                 foreach (var client in _clients)
@@ -799,7 +610,7 @@ Messages Received: {_messagesReceived}";
     }
 
     //==========================================================================
-    // UDP RECEIVER (Integrated - from Wrapper improvements)
+    // UDP RECEIVER (Integrated)
     //==========================================================================
 
     public class IntegratedUdpReceiver
@@ -809,24 +620,18 @@ Messages Received: {_messagesReceived}";
         private UdpClient? _udpClient;
         private CancellationToken _ct;
 
-        // State management (from Wrapper)
         private string _activeAction = "neutral";
         private string _candidateAction = "neutral";
         private DateTime _candidateSince = DateTime.UtcNow;
         private double _lastConfidence = 0.0;
         private DateTime _activeSince = DateTime.UtcNow;
         private string _lastSource = "none";
-
-        // Rate limiting
         private DateTime _lastBroadcast = DateTime.MinValue;
         private string _lastBroadcastJson = "";
 
-        // Metrics
         private long _packetsReceived = 0;
-        private long _packetsProcessed = 0;
         private long _stateChanges = 0;
 
-        // Event for broadcasting
         public event Func<BrainEvent, Task>? OnBrainEvent;
 
         public string ActiveAction => _activeAction;
@@ -851,18 +656,12 @@ Messages Received: {_messagesReceived}";
             {
                 _udpClient = new UdpClient(port);
                 _logger.Info($"UDP Receiver listening on port {port}", "UDP-RECV");
-                _logger.Info($"  On threshold: {_config.UdpReceiver.Thresholds.OnThreshold}", "UDP-RECV");
-                _logger.Info($"  Off threshold: {_config.UdpReceiver.Thresholds.OffThreshold}", "UDP-RECV");
-                _logger.Info($"  Debounce: {_config.UdpReceiver.Thresholds.DebounceMs}ms", "UDP-RECV");
-                _logger.Info($"  Rate limit: {_config.UdpReceiver.Thresholds.RateHz}Hz", "UDP-RECV");
             }
             catch (SocketException ex)
             {
                 _logger.Error($"Failed to bind UDP port {port}: {ex.Message}", "UDP-RECV", ex);
                 throw;
             }
-
-            int intervalMs = Math.Max(1, 1000 / _config.UdpReceiver.Thresholds.RateHz);
 
             while (!ct.IsCancellationRequested)
             {
@@ -884,43 +683,34 @@ Messages Received: {_messagesReceived}";
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error($"Error receiving UDP packet: {ex.Message}", "UDP-RECV", ex);
+                    _logger.Debug($"UDP error: {ex.Message}", "UDP-RECV");
                 }
             }
 
             _udpClient.Close();
-            _logger.Info("UDP Receiver stopped", "UDP-RECV");
         }
 
         private async Task ProcessPacketAsync(byte[] buffer)
         {
             _packetsReceived++;
-            
+
             string action;
             double confidence;
 
-            // Try to parse as OSC first
             if (TryParseOsc(buffer, out action, out confidence))
             {
                 _lastSource = "osc";
-                _logger.Debug($"Parsed OSC: action={action}, conf={confidence:F2}", "UDP-RECV");
             }
-            // Fall back to CSV format
             else if (TryParseCsv(buffer, out action, out confidence))
             {
                 _lastSource = "csv";
-                _logger.Debug($"Parsed CSV: action={action}, conf={confidence:F2}", "UDP-RECV");
             }
             else
             {
-                _logger.Debug($"Failed to parse packet: {Encoding.UTF8.GetString(buffer)}", "UDP-RECV");
                 return;
             }
 
             _lastConfidence = confidence;
-            _packetsProcessed++;
-
-            // Apply filters (from Wrapper)
             await ApplyFiltersAndBroadcastAsync(action, confidence);
         }
 
@@ -931,55 +721,35 @@ Messages Received: {_messagesReceived}";
 
             try
             {
-                if (buffer.Length < 8) return false;
+                if (buffer.Length < 8 || buffer[0] != '/') return false;
 
-                // OSC address pattern starts with '/'
-                if (buffer[0] != '/') return false;
-
-                // Find end of address (null-terminated, padded to 4 bytes)
                 int addressEnd = Array.IndexOf(buffer, (byte)0);
                 if (addressEnd < 0) return false;
 
                 string address = Encoding.ASCII.GetString(buffer, 0, addressEnd);
-                _logger.Debug($"OSC address: {address}", "UDP-RECV");
-
-                // Skip to type tag (after address padding)
-                int typeTagStart = ((addressEnd + 4) / 4) * 4;
-                if (typeTagStart >= buffer.Length) return false;
-
-                // Extract action from address (e.g., "/com/push" -> "push")
                 string[] parts = address.Split('/');
-                if (parts.Length >= 3)
+                if (parts.Length >= 2)
                 {
                     action = parts[^1].ToLowerInvariant();
                 }
 
-                // Look for float argument (confidence)
-                // Type tag should be ",f" for float
+                int typeTagStart = ((addressEnd + 4) / 4) * 4;
                 int dataStart = typeTagStart;
-                while (dataStart < buffer.Length && buffer[dataStart] != 0)
-                {
-                    dataStart++;
-                }
+                while (dataStart < buffer.Length && buffer[dataStart] != 0) dataStart++;
                 dataStart = ((dataStart + 4) / 4) * 4;
 
                 if (dataStart + 4 <= buffer.Length)
                 {
-                    // OSC floats are big-endian
                     byte[] floatBytes = new byte[4];
                     Array.Copy(buffer, dataStart, floatBytes, 0, 4);
-                    if (BitConverter.IsLittleEndian)
-                    {
-                        Array.Reverse(floatBytes);
-                    }
+                    if (BitConverter.IsLittleEndian) Array.Reverse(floatBytes);
                     confidence = BitConverter.ToSingle(floatBytes, 0);
                 }
 
                 return !string.IsNullOrEmpty(action);
             }
-            catch (Exception ex)
+            catch
             {
-                _logger.Debug($"OSC parse error: {ex.Message}", "UDP-RECV");
                 return false;
             }
         }
@@ -993,15 +763,11 @@ Messages Received: {_messagesReceived}";
             {
                 string text = Encoding.UTF8.GetString(buffer).Trim();
                 var parts = text.Split(',');
-
                 if (parts.Length != 2) return false;
 
                 action = parts[0].Trim().ToLowerInvariant();
-                
                 if (!double.TryParse(parts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out confidence))
-                {
                     return false;
-                }
 
                 return !string.IsNullOrEmpty(action);
             }
@@ -1016,53 +782,33 @@ Messages Received: {_messagesReceived}";
             var thresholds = _config.UdpReceiver.Thresholds;
             string previousActive = _activeAction;
 
-            // Determine desired state based on thresholds (hysteresis)
             string desired = _activeAction;
-
             if (confidence >= thresholds.OnThreshold && action != "neutral")
-            {
                 desired = action;
-            }
             else if (confidence < thresholds.OffThreshold)
-            {
                 desired = "neutral";
-            }
-            else if (_activeAction != "neutral" && action == _activeAction)
-            {
-                // Keep current action in hysteresis zone
-                desired = _activeAction;
-            }
 
-            // Debounce logic
             if (desired != _candidateAction)
             {
                 _candidateAction = desired;
                 _candidateSince = DateTime.UtcNow;
-                _logger.Debug($"New candidate: {_candidateAction} (conf={confidence:F2})", "UDP-RECV");
             }
             else if ((DateTime.UtcNow - _candidateSince).TotalMilliseconds >= thresholds.DebounceMs)
             {
-                // Candidate has been stable long enough
                 if (_candidateAction != _activeAction)
                 {
-                    string previousAction = _activeAction;
+                    string prev = _activeAction;
                     _activeAction = _candidateAction;
                     _activeSince = DateTime.UtcNow;
                     _stateChanges++;
-
-                    _logger.LogStateChange(previousAction, _activeAction, confidence, 
-                        $"debounced after {thresholds.DebounceMs}ms");
+                    _logger.LogStateChange(prev, _activeAction, confidence, "debounced");
                 }
             }
 
-            // Rate limiting for broadcasts
             int intervalMs = Math.Max(1, 1000 / thresholds.RateHz);
             if ((DateTime.UtcNow - _lastBroadcast).TotalMilliseconds < intervalMs)
-            {
                 return;
-            }
 
-            // Only broadcast if state changed or it's been a while
             if (_activeAction != previousActive || (DateTime.UtcNow - _lastBroadcast).TotalSeconds > 1)
             {
                 var brainEvent = new BrainEvent
@@ -1072,237 +818,28 @@ Messages Received: {_messagesReceived}";
                     Action = MapAction(_activeAction),
                     Confidence = confidence,
                     DurationMs = (int)(DateTime.UtcNow - _activeSince).TotalMilliseconds,
-                    Source = _lastSource,
-                    Raw = new Dictionary<string, object>
-                    {
-                        ["rawAction"] = action,
-                        ["rawConfidence"] = confidence,
-                        ["filtered"] = true
-                    }
+                    Source = _lastSource
                 };
 
                 string json = JsonSerializer.Serialize(brainEvent);
-
-                // Deduplicate identical messages
                 if (json != _lastBroadcastJson)
                 {
                     _lastBroadcastJson = json;
                     _lastBroadcast = DateTime.UtcNow;
-
                     if (OnBrainEvent != null)
-                    {
                         await OnBrainEvent(brainEvent);
-                    }
                 }
             }
         }
 
         private string MapAction(string action)
         {
-            if (_config.ActionMap.TryGetValue(action, out string? mapped))
-            {
-                return mapped;
-            }
-            return action;
+            return _config.ActionMap.TryGetValue(action, out string? mapped) ? mapped : action;
         }
 
         public void Stop()
         {
             _udpClient?.Close();
-        }
-
-        public void InjectTestPacket(string action, double confidence)
-        {
-            _logger.Info($"Injecting test packet: {action},{confidence:F2}", "UDP-RECV");
-            _ = ProcessPacketAsync(Encoding.UTF8.GetBytes($"{action},{confidence:F2}"));
-        }
-    }
-
-    //==========================================================================
-    // METRICS REPORTER
-    //==========================================================================
-
-    public class MetricsReporter
-    {
-        private readonly Logger _logger;
-        private readonly BciOrchestrator _orchestrator;
-        private long _lastPacketCount = 0;
-        private long _lastActionCount = 0;
-        private DateTime _lastReportTime = DateTime.UtcNow;
-
-        public MetricsReporter(Logger logger, BciOrchestrator orchestrator)
-        {
-            _logger = logger;
-            _orchestrator = orchestrator;
-        }
-
-        public async Task RunAsync(CancellationToken ct, int intervalMs)
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                await Task.Delay(intervalMs, ct);
-                Report();
-            }
-        }
-
-        public void Report()
-        {
-            var stats = _orchestrator.GetStats();
-            var now = DateTime.UtcNow;
-            var elapsed = (now - _lastReportTime).TotalSeconds;
-
-            if (elapsed > 0)
-            {
-                stats.PacketsPerSecond = (stats.TotalPackets - _lastPacketCount) / elapsed;
-            }
-
-            _logger.LogMetrics(stats);
-
-            _lastPacketCount = stats.TotalPackets;
-            _lastActionCount = stats.TotalActions;
-            _lastReportTime = now;
-        }
-    }
-
-    //==========================================================================
-    // TEST COMMAND INTERFACE
-    //==========================================================================
-
-    public class TestCommandInterface
-    {
-        private readonly Logger _logger;
-        private readonly IntegratedUdpReceiver _receiver;
-        private UdpClient? _testUdp;
-
-        public TestCommandInterface(Logger logger, IntegratedUdpReceiver receiver)
-        {
-            _logger = logger;
-            _receiver = receiver;
-        }
-
-        public async Task RunInteractiveAsync(int targetPort, CancellationToken ct)
-        {
-            _testUdp = new UdpClient();
-            _logger.Info("Test mode active. Commands: action,confidence (e.g., push,0.85) or 'quit'", "TEST");
-
-            while (!ct.IsCancellationRequested)
-            {
-                Console.Write("Test> ");
-                string? input = Console.ReadLine();
-
-                if (string.IsNullOrWhiteSpace(input)) continue;
-
-                input = input.Trim().ToLower();
-
-                switch (input)
-                {
-                    case "quit":
-                    case "exit":
-                        _logger.Info("Exiting test mode", "TEST");
-                        return;
-
-                    case "help":
-                        PrintHelp();
-                        continue;
-
-                    case "status":
-                        PrintStatus();
-                        continue;
-
-                    case "sequence":
-                        await RunTestSequenceAsync(targetPort);
-                        continue;
-                }
-
-                // Parse action,confidence
-                var parts = input.Split(',');
-                if (parts.Length != 2)
-                {
-                    _logger.Warn("Invalid format. Use: action,confidence (e.g., push,0.85)", "TEST");
-                    continue;
-                }
-
-                if (!double.TryParse(parts[1].Trim(), out double confidence) || confidence < 0 || confidence > 1)
-                {
-                    _logger.Warn("Confidence must be between 0.0 and 1.0", "TEST");
-                    continue;
-                }
-
-                await InjectAsync(parts[0].Trim(), confidence, targetPort);
-            }
-
-            _testUdp.Close();
-        }
-
-        private void PrintHelp()
-        {
-            Console.WriteLine(@"
-Test Commands:
-  action,confidence  - Inject a mental command (e.g., push,0.85)
-  sequence          - Run automated test sequence
-  status            - Show current state
-  help              - Show this help
-  quit/exit         - Exit test mode
-
-Actions: push, pull, left, right, lift, drop, neutral
-Confidence: 0.0 to 1.0
-");
-        }
-
-        private void PrintStatus()
-        {
-            Console.WriteLine($@"
-Current State:
-  Active: {_receiver.ActiveAction}
-  Confidence: {_receiver.LastConfidence:F2}
-  Source: {_receiver.LastSource}
-  Packets: {_receiver.PacketsReceived}
-  State Changes: {_receiver.StateChanges}
-");
-        }
-
-        private async Task InjectAsync(string action, double confidence, int port)
-        {
-            string payload = $"{action},{confidence:F2}";
-            byte[] data = Encoding.UTF8.GetBytes(payload);
-
-            try
-            {
-                await _testUdp!.SendAsync(data, data.Length, "127.0.0.1", port);
-                _logger.Info($"✓ Injected: {payload}", "TEST");
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"Injection failed: {ex.Message}", "TEST", ex);
-            }
-        }
-
-        private async Task RunTestSequenceAsync(int port)
-        {
-            _logger.Info("Running automated test sequence...", "TEST");
-
-            var sequence = new (string action, double conf, int delayMs)[]
-            {
-                ("neutral", 0.3, 1000),
-                ("push", 0.85, 2000),
-                ("neutral", 0.4, 500),
-                ("left", 0.75, 2000),
-                ("neutral", 0.3, 500),
-                ("right", 0.80, 2000),
-                ("neutral", 0.4, 500),
-                ("pull", 0.70, 2000),
-                ("neutral", 0.3, 1000),
-                ("lift", 0.90, 500),
-                ("neutral", 0.3, 2000)
-            };
-
-            foreach (var (action, conf, delay) in sequence)
-            {
-                await InjectAsync(action, conf, port);
-                await Task.Delay(delay);
-            }
-
-            _logger.Info("Test sequence complete", "TEST");
         }
     }
 
@@ -1316,76 +853,84 @@ Current State:
         private Logger _logger = null!;
         private IntegratedWebSocketServer? _wsServer;
         private IntegratedUdpReceiver? _udpReceiver;
-        private MetricsReporter? _metricsReporter;
-        private TestCommandInterface? _testInterface;
-
         private CancellationTokenSource _cts = new();
         private DateTime _startTime;
         private bool _isShuttingDown = false;
 
-        // External process management (if not using integrated components)
-        private Process? _nodeServerProcess;
-        private Process? _externalUdpReceiverProcess;
-        private readonly Dictionary<string, int> _restartCounts = new();
-        private readonly Dictionary<string, DateTime> _lastRestartAttempt = new();
-
         public static async Task Main(string[] args)
         {
-            Console.WriteLine("═══════════════════════════════════════════════════════");
-            Console.WriteLine("  BCI GESTURE CONTROL ORCHESTRATOR v2.0");
-            Console.WriteLine("  Comprehensive BCI Signal Processing & Distribution");
-            Console.WriteLine("═══════════════════════════════════════════════════════");
+            // IMMEDIATE startup output
             Console.WriteLine();
+            Console.WriteLine("╔═══════════════════════════════════════════════════════╗");
+            Console.WriteLine("║     BCI GESTURE CONTROL ORCHESTRATOR v2.1             ║");
+            Console.WriteLine("║     Starting up...                                    ║");
+            Console.WriteLine("╚═══════════════════════════════════════════════════════╝");
+            Console.WriteLine();
+            Console.Out.Flush();
+
+            Console.WriteLine($"[BOOT] Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine($"[BOOT] Args: {(args.Length > 0 ? string.Join(" ", args) : "(none)")}");
+            Console.Out.Flush();
 
             var orchestrator = new BciOrchestrator();
 
-            // Parse command line
+            // Parse command line FIRST
+            Console.WriteLine("[BOOT] Parsing command line arguments...");
+            Console.Out.Flush();
             orchestrator.ParseArgs(args);
+
+            Console.WriteLine($"[BOOT] Test Mode: {orchestrator._config.TestMode}");
+            Console.WriteLine($"[BOOT] Log Level: {orchestrator._config.Logging.Level}");
+            Console.Out.Flush();
 
             // Setup graceful shutdown
             Console.CancelKeyPress += (sender, e) =>
             {
                 e.Cancel = true;
-                orchestrator._logger?.Info("Received CTRL+C, initiating shutdown...", "MAIN");
+                Console.WriteLine("\n[SHUTDOWN] Received CTRL+C, shutting down...");
                 orchestrator._isShuttingDown = true;
                 orchestrator._cts.Cancel();
-            };
-
-            AppDomain.CurrentDomain.ProcessExit += (sender, e) =>
-            {
-                orchestrator._isShuttingDown = true;
-                orchestrator._cts.Cancel();
-                orchestrator.Cleanup();
             };
 
             try
             {
-                // Initialize
+                Console.WriteLine("[BOOT] Initializing...");
+                Console.Out.Flush();
+
                 if (!orchestrator.Initialize())
                 {
-                    Console.WriteLine("Initialization failed. Exiting.");
+                    Console.WriteLine("[BOOT] ✗ Initialization failed!");
                     return;
                 }
 
-                // Start all components
+                Console.WriteLine("[BOOT] ✓ Initialization complete");
+                Console.Out.Flush();
+
+                Console.WriteLine("[BOOT] Starting components...");
+                Console.Out.Flush();
+
                 if (!await orchestrator.StartAsync())
                 {
-                    orchestrator._logger.Error("Failed to start required components", "MAIN");
+                    Console.WriteLine("[BOOT] ✗ Failed to start components!");
                     orchestrator.Cleanup();
                     return;
                 }
 
-                // Run main loop
+                Console.WriteLine("[BOOT] ✓ All components started");
+                Console.Out.Flush();
+
+                // Run main loop (or test mode)
                 await orchestrator.RunAsync();
             }
             catch (Exception ex)
             {
-                orchestrator._logger?.Error($"Fatal error: {ex.Message}", "MAIN", ex);
+                Console.WriteLine($"[ERROR] Fatal: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
             }
             finally
             {
                 orchestrator.Cleanup();
-                orchestrator._logger?.Info("Orchestrator shutdown complete", "MAIN");
+                Console.WriteLine("[SHUTDOWN] Complete");
             }
         }
 
@@ -1393,7 +938,10 @@ Current State:
         {
             for (int i = 0; i < args.Length; i++)
             {
-                switch (args[i].ToLower())
+                string arg = args[i].ToLower();
+                Console.WriteLine($"[BOOT]   Processing arg: {arg}");
+
+                switch (arg)
                 {
                     case "--help":
                     case "-h":
@@ -1401,22 +949,16 @@ Current State:
                         Environment.Exit(0);
                         break;
 
-                    case "--config":
-                    case "-c":
-                        if (i + 1 < args.Length)
-                        {
-                            LoadConfigFromFile(args[++i]);
-                        }
-                        break;
-
                     case "--test-mode":
                     case "-t":
                         _config.TestMode = true;
+                        Console.WriteLine("[BOOT]   → Test mode ENABLED");
                         break;
 
                     case "--debug":
                     case "-d":
                         _config.Logging.Level = "DEBUG";
+                        Console.WriteLine("[BOOT]   → Debug logging ENABLED");
                         break;
 
                     case "--allow-lan":
@@ -1427,20 +969,12 @@ Current State:
                     case "--port":
                     case "-p":
                         if (i + 1 < args.Length && int.TryParse(args[++i], out int port))
-                        {
                             _config.WebSocket.Port = port;
-                        }
                         break;
 
                     case "--udp-port":
                         if (i + 1 < args.Length && int.TryParse(args[++i], out int udpPort))
-                        {
                             _config.UdpReceiver.Port = udpPort;
-                        }
-                        break;
-
-                    case "--use-node":
-                        _config.UseIntegratedWebSocket = false;
                         break;
                 }
             }
@@ -1448,231 +982,229 @@ Current State:
 
         private bool Initialize()
         {
-            // Load configuration
             try
             {
+                // Try to load config file
                 if (File.Exists("./appsettings.json"))
                 {
+                    Console.WriteLine("[INIT] Loading appsettings.json...");
                     string json = File.ReadAllText("./appsettings.json");
                     var loaded = JsonSerializer.Deserialize<OrchestratorConfig>(json);
                     if (loaded != null)
                     {
-                        // Merge with command line overrides
-                        loaded.Logging.Level = _config.Logging.Level;
-                        loaded.TestMode = _config.TestMode;
-                        loaded.WebSocket.AllowLAN = _config.WebSocket.AllowLAN;
-                        if (_config.WebSocket.Host == "0.0.0.0")
-                            loaded.WebSocket.Host = "0.0.0.0";
+                        // Preserve command-line overrides
+                        bool testMode = _config.TestMode;
+                        string logLevel = _config.Logging.Level;
                         _config = loaded;
+                        _config.TestMode = testMode;
+                        _config.Logging.Level = logLevel;
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Warning: Failed to load config: {ex.Message}");
+                Console.WriteLine($"[INIT] Warning: Config load failed: {ex.Message}");
             }
 
-            // Initialize logger
+            // Create logger
             _logger = new Logger(_config.Logging);
-            _logger.Info("═══════════════════════════════════════════════════════", "INIT");
-            _logger.Info("  INITIALIZING BCI ORCHESTRATOR", "INIT");
-            _logger.Info("═══════════════════════════════════════════════════════", "INIT");
-
-            // Log configuration
-            _logger.Info($"Configuration:", "INIT");
-            _logger.Info($"  WebSocket: {_config.WebSocket.Host}:{_config.WebSocket.Port}", "INIT");
-            _logger.Info($"  UDP Port: {_config.UdpReceiver.Port}", "INIT");
-            _logger.Info($"  Log Level: {_config.Logging.Level}", "INIT");
-            _logger.Info($"  Test Mode: {_config.TestMode}", "INIT");
-            _logger.Info($"  Integrated WS: {_config.UseIntegratedWebSocket}", "INIT");
-
-            // Create log directory
-            Directory.CreateDirectory(Path.GetDirectoryName(_config.Logging.LogFile) ?? "./logs");
-
-            // Initialize components
             _startTime = DateTime.UtcNow;
-            _restartCounts["wsServer"] = 0;
-            _restartCounts["udpReceiver"] = 0;
 
-            _logger.LogStartup("Logger", true, $"Level={_config.Logging.Level}");
+            _logger.Info("═══════════════════════════════════════════════════════", "INIT");
+            _logger.Info("  ORCHESTRATOR INITIALIZED", "INIT");
+            _logger.Info("═══════════════════════════════════════════════════════", "INIT");
+            _logger.Info($"  WebSocket Port: {_config.WebSocket.Port}", "INIT");
+            _logger.Info($"  UDP Port: {_config.UdpReceiver.Port}", "INIT");
+            _logger.Info($"  Test Mode: {_config.TestMode}", "INIT");
+            _logger.Info($"  Log Level: {_config.Logging.Level}", "INIT");
 
             return true;
-        }
-
-        private void LoadConfigFromFile(string path)
-        {
-            if (!File.Exists(path))
-            {
-                Console.WriteLine($"Config file not found: {path}");
-                return;
-            }
-
-            string json = File.ReadAllText(path);
-            var loaded = JsonSerializer.Deserialize<OrchestratorConfig>(json);
-            if (loaded != null)
-            {
-                _config = loaded;
-            }
         }
 
         private async Task<bool> StartAsync()
         {
-            _logger.Info("Starting components...", "STARTUP");
-
-            // Start integrated UDP receiver
+            // Start UDP receiver
             _udpReceiver = new IntegratedUdpReceiver(_logger, _config);
             _udpReceiver.OnBrainEvent += async (brainEvent) =>
             {
                 if (_wsServer != null)
-                {
                     await _wsServer.BroadcastAsync(brainEvent);
-                }
             };
 
-            var udpTask = Task.Run(() => _udpReceiver.StartAsync(_cts.Token));
-            await Task.Delay(500); // Give it time to bind
+            _ = Task.Run(() => _udpReceiver.StartAsync(_cts.Token));
+            await Task.Delay(300);
             _logger.LogStartup("UDP Receiver", true, $"Port {_config.UdpReceiver.Port}");
 
-            // Start WebSocket server (integrated or Node.js)
-            if (_config.UseIntegratedWebSocket)
-            {
-                _wsServer = new IntegratedWebSocketServer(_logger, _config);
-                _wsServer.SetStateProvider(GetStateSnapshot);
-                
-                var wsTask = Task.Run(() => _wsServer.StartAsync(_cts.Token));
-                await Task.Delay(500);
-                _logger.LogStartup("WebSocket Server (Integrated)", true, $"Port {_config.WebSocket.Port}");
-            }
-            else
-            {
-                if (!await StartNodeWebSocketServerAsync())
-                {
-                    _logger.LogStartup("WebSocket Server (Node.js)", false);
-                    return false;
-                }
-                _logger.LogStartup("WebSocket Server (Node.js)", true, $"Port {_config.WebSocket.Port}");
-            }
+            // Start WebSocket server
+            _wsServer = new IntegratedWebSocketServer(_logger, _config);
+            _wsServer.SetStateProvider(GetStateSnapshot);
 
-            // Start metrics reporter
-            _metricsReporter = new MetricsReporter(_logger, this);
-            _ = Task.Run(() => _metricsReporter.RunAsync(_cts.Token, _config.Health.MetricsReportIntervalMs));
-            _logger.LogStartup("Metrics Reporter", true);
-
-            // Start test interface if in test mode
-            if (_config.TestMode)
-            {
-                _testInterface = new TestCommandInterface(_logger, _udpReceiver);
-                _ = Task.Run(() => _testInterface.RunInteractiveAsync(_config.UdpReceiver.Port, _cts.Token));
-                _logger.LogStartup("Test Interface", true);
-            }
+            _ = Task.Run(() => _wsServer.StartAsync(_cts.Token));
+            await Task.Delay(300);
+            _logger.LogStartup("WebSocket Server", true, $"Port {_config.WebSocket.Port}");
 
             _logger.Info("═══════════════════════════════════════════════════════", "STARTUP");
-            _logger.Info("  ALL COMPONENTS STARTED SUCCESSFULLY", "STARTUP");
+            _logger.Info("  ALL COMPONENTS STARTED", "STARTUP");
             _logger.Info("═══════════════════════════════════════════════════════", "STARTUP");
 
             return true;
         }
 
-        private async Task<bool> StartNodeWebSocketServerAsync()
-        {
-            _logger.Info("Starting Node.js WebSocket server...", "NODE");
-
-            if (!File.Exists("./local_server.js"))
-            {
-                _logger.Error("local_server.js not found", "NODE");
-                return false;
-            }
-
-            try
-            {
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = "node",
-                    ArgumentList = { "./local_server.js" },
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                    WorkingDirectory = Directory.GetCurrentDirectory()
-                };
-
-                startInfo.Environment["WS_PORT"] = _config.WebSocket.Port.ToString();
-                startInfo.Environment["WS_HOST"] = _config.WebSocket.Host;
-
-                _nodeServerProcess = Process.Start(startInfo);
-
-                if (_nodeServerProcess == null)
-                {
-                    return false;
-                }
-
-                _nodeServerProcess.OutputDataReceived += (s, e) =>
-                {
-                    if (!string.IsNullOrWhiteSpace(e.Data))
-                        _logger.Debug($"[NODE] {e.Data}", "NODE");
-                };
-                _nodeServerProcess.ErrorDataReceived += (s, e) =>
-                {
-                    if (!string.IsNullOrWhiteSpace(e.Data))
-                        _logger.Warn($"[NODE-ERR] {e.Data}", "NODE");
-                };
-                _nodeServerProcess.EnableRaisingEvents = true;
-                _nodeServerProcess.Exited += OnNodeServerExited;
-
-                _nodeServerProcess.BeginOutputReadLine();
-                _nodeServerProcess.BeginErrorReadLine();
-
-                await Task.Delay(1000); // Wait for Node to start
-                return !_nodeServerProcess.HasExited;
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"Failed to start Node.js: {ex.Message}", "NODE", ex);
-                return false;
-            }
-        }
-
-        private void OnNodeServerExited(object? sender, EventArgs e)
-        {
-            if (_isShuttingDown) return;
-
-            int exitCode = _nodeServerProcess?.ExitCode ?? -1;
-            _logger.Warn($"Node.js server exited with code {exitCode}", "NODE");
-
-            // Attempt restart
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(_config.Health.RestartCooldownMs);
-                if (!_isShuttingDown && _restartCounts["wsServer"] < _config.Health.MaxRestarts)
-                {
-                    _restartCounts["wsServer"]++;
-                    _logger.Info($"Attempting restart {_restartCounts["wsServer"]}/{_config.Health.MaxRestarts}", "NODE");
-                    await StartNodeWebSocketServerAsync();
-                }
-            });
-        }
-
         private async Task RunAsync()
         {
-            _logger.Info("Orchestrator running. Press Ctrl+C to stop.", "MAIN");
+            if (_config.TestMode)
+            {
+                // RUN TEST MODE IN FOREGROUND (this is the fix!)
+                _logger.Info("═══════════════════════════════════════════════════════", "TEST");
+                _logger.Info("  TEST MODE ACTIVE", "TEST");
+                _logger.Info("  Type: action,confidence (e.g., push,0.85)", "TEST");
+                _logger.Info("  Commands: sequence, status, help, quit", "TEST");
+                _logger.Info("═══════════════════════════════════════════════════════", "TEST");
+
+                await RunTestModeAsync();
+            }
+            else
+            {
+                _logger.Info("Running in normal mode. Press Ctrl+C to stop.", "MAIN");
+                _logger.Info($"Connect Unity to: ws://127.0.0.1:{_config.WebSocket.Port}/stream", "MAIN");
+
+                while (!_cts.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(1000, _cts.Token);
+                }
+            }
+        }
+
+        private async Task RunTestModeAsync()
+        {
+            using var testUdp = new UdpClient();
 
             while (!_cts.Token.IsCancellationRequested)
             {
-                try
-                {
-                    await Task.Delay(1000, _cts.Token);
+                Console.Write("\nTest> ");
+                Console.Out.Flush();
 
-                    // Health checks
-                    if (!_config.UseIntegratedWebSocket && _nodeServerProcess?.HasExited == true)
-                    {
-                        _logger.Warn("Node.js process not running", "HEALTH");
-                    }
-                }
-                catch (OperationCanceledException)
+                string? input = Console.ReadLine();
+
+                if (string.IsNullOrWhiteSpace(input)) continue;
+
+                input = input.Trim().ToLower();
+
+                switch (input)
                 {
-                    break;
+                    case "quit":
+                    case "exit":
+                        _logger.Info("Exiting test mode...", "TEST");
+                        _cts.Cancel();
+                        return;
+
+                    case "help":
+                        PrintTestHelp();
+                        continue;
+
+                    case "status":
+                        PrintStatus();
+                        continue;
+
+                    case "sequence":
+                        await RunTestSequenceAsync(testUdp);
+                        continue;
                 }
+
+                // Parse action,confidence
+                var parts = input.Split(',');
+                if (parts.Length != 2)
+                {
+                    Console.WriteLine("Invalid format. Use: action,confidence (e.g., push,0.85)");
+                    continue;
+                }
+
+                if (!double.TryParse(parts[1].Trim(), out double confidence) || confidence < 0 || confidence > 1)
+                {
+                    Console.WriteLine("Confidence must be between 0.0 and 1.0");
+                    continue;
+                }
+
+                await InjectCommandAsync(testUdp, parts[0].Trim(), confidence);
             }
+        }
+
+        private async Task InjectCommandAsync(UdpClient udp, string action, double confidence)
+        {
+            string payload = $"{action},{confidence:F2}";
+            byte[] data = Encoding.UTF8.GetBytes(payload);
+
+            try
+            {
+                await udp.SendAsync(data, data.Length, "127.0.0.1", _config.UdpReceiver.Port);
+                Console.WriteLine($"✓ Sent: {payload}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error: {ex.Message}");
+            }
+        }
+
+        private async Task RunTestSequenceAsync(UdpClient udp)
+        {
+            Console.WriteLine("\nRunning test sequence...");
+
+            var sequence = new (string action, double conf, int delay)[]
+            {
+                ("neutral", 0.3, 500),
+                ("push", 0.85, 1500),
+                ("neutral", 0.3, 300),
+                ("left", 0.75, 1500),
+                ("neutral", 0.3, 300),
+                ("right", 0.80, 1500),
+                ("neutral", 0.3, 300),
+                ("pull", 0.70, 1500),
+                ("neutral", 0.3, 500)
+            };
+
+            foreach (var (action, conf, delay) in sequence)
+            {
+                await InjectCommandAsync(udp, action, conf);
+                await Task.Delay(delay);
+            }
+
+            Console.WriteLine("Test sequence complete!");
+        }
+
+        private void PrintStatus()
+        {
+            Console.WriteLine();
+            Console.WriteLine("╔═══════════════════════════════════════╗");
+            Console.WriteLine("║           CURRENT STATUS              ║");
+            Console.WriteLine("╠═══════════════════════════════════════╣");
+            Console.WriteLine($"║  Active Action: {_udpReceiver?.ActiveAction ?? "neutral",-20} ║");
+            Console.WriteLine($"║  Confidence:    {_udpReceiver?.LastConfidence ?? 0:F2,-20} ║");
+            Console.WriteLine($"║  Source:        {_udpReceiver?.LastSource ?? "none",-20} ║");
+            Console.WriteLine($"║  Packets:       {_udpReceiver?.PacketsReceived ?? 0,-20} ║");
+            Console.WriteLine($"║  State Changes: {_udpReceiver?.StateChanges ?? 0,-20} ║");
+            Console.WriteLine($"║  WS Clients:    {_wsServer?.ConnectedClients ?? 0,-20} ║");
+            Console.WriteLine("╚═══════════════════════════════════════╝");
+        }
+
+        private void PrintTestHelp()
+        {
+            Console.WriteLine(@"
+╔═══════════════════════════════════════════════════════════╗
+║                    TEST COMMANDS                          ║
+╠═══════════════════════════════════════════════════════════╣
+║  push,0.85    - Send push command with 85% confidence     ║
+║  pull,0.70    - Send pull command                         ║
+║  left,0.75    - Send left command                         ║
+║  right,0.80   - Send right command                        ║
+║  lift,0.90    - Send lift command                         ║
+║  neutral,0.30 - Return to neutral                         ║
+║                                                           ║
+║  sequence     - Run automated test sequence               ║
+║  status       - Show current state                        ║
+║  help         - Show this help                            ║
+║  quit         - Exit test mode                            ║
+╚═══════════════════════════════════════════════════════════╝
+");
         }
 
         public StateSnapshot GetStateSnapshot()
@@ -1681,91 +1213,45 @@ Current State:
             {
                 Active = _udpReceiver?.ActiveAction ?? "neutral",
                 Confidence = _udpReceiver?.LastConfidence ?? 0,
-                DurationMs = _udpReceiver != null 
-                    ? (int)(DateTime.UtcNow - _udpReceiver.ActiveSince).TotalMilliseconds 
-                    : 0,
+                DurationMs = _udpReceiver != null ? (int)(DateTime.UtcNow - _udpReceiver.ActiveSince).TotalMilliseconds : 0,
                 Source = _udpReceiver?.LastSource ?? "none",
                 Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 UptimeMs = (long)(DateTime.UtcNow - _startTime).TotalMilliseconds,
-                Stats = GetStats()
-            };
-        }
-
-        public OrchestratorStats GetStats()
-        {
-            return new OrchestratorStats
-            {
-                TotalPackets = _udpReceiver?.PacketsReceived ?? 0,
-                TotalActions = _udpReceiver?.StateChanges ?? 0,
-                AvgConfidence = _udpReceiver?.LastConfidence ?? 0,
-                ConnectedClients = _wsServer?.ConnectedClients ?? 0
+                Stats = new OrchestratorStats
+                {
+                    TotalPackets = _udpReceiver?.PacketsReceived ?? 0,
+                    TotalActions = _udpReceiver?.StateChanges ?? 0,
+                    ConnectedClients = _wsServer?.ConnectedClients ?? 0
+                }
             };
         }
 
         private void Cleanup()
         {
-            _logger?.Info("Cleaning up...", "SHUTDOWN");
-
             _isShuttingDown = true;
             _cts.Cancel();
-
-            // Stop integrated components
             _wsServer?.Stop();
             _udpReceiver?.Stop();
-
-            // Stop external processes
-            StopProcess("Node.js", _nodeServerProcess);
-            StopProcess("UDP Receiver", _externalUdpReceiverProcess);
-
-            _logger?.Info("Cleanup complete", "SHUTDOWN");
-        }
-
-        private void StopProcess(string name, Process? process)
-        {
-            if (process == null || process.HasExited) return;
-
-            _logger?.Debug($"Stopping {name}...", "SHUTDOWN");
-
-            try
-            {
-                process.CloseMainWindow();
-                if (!process.WaitForExit(5000))
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                process.Dispose();
-            }
-            catch (Exception ex)
-            {
-                _logger?.Debug($"Error stopping {name}: {ex.Message}", "SHUTDOWN");
-            }
         }
 
         private void PrintHelp()
         {
             Console.WriteLine(@"
-BCI Gesture Control Orchestrator v2.0
+BCI Gesture Control Orchestrator v2.1
 
-Usage: BciOrchestrator [options]
+Usage: dotnet run -- [options]
 
 Options:
-  -h, --help          Show this help message
-  -c, --config PATH   Load configuration from PATH
-  -t, --test-mode     Run in test mode (interactive command injection)
-  -d, --debug         Enable debug logging
-  -p, --port PORT     WebSocket server port (default: 8080)
-  --udp-port PORT     UDP receiver port (default: 7400)
-  --allow-lan         Allow LAN connections (bind to 0.0.0.0)
-  --use-node          Use external Node.js WebSocket server
+  -h, --help        Show this help
+  -t, --test-mode   Run in interactive test mode
+  -d, --debug       Enable debug logging
+  -p, --port PORT   WebSocket port (default: 8080)
+  --udp-port PORT   UDP port (default: 7400)
+  --allow-lan       Allow LAN connections
 
-Configuration:
-  Edit appsettings.json to customize behavior
-
-Example:
-  BciOrchestrator --debug --test-mode
-  BciOrchestrator --config production.json --allow-lan
-
-For more information, see the README.md file.
+Examples:
+  dotnet run -- --test-mode --debug
+  dotnet run -- --port 9000
 ");
         }
     }

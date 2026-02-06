@@ -15,30 +15,47 @@
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
             padding: 20px;
         }
 
-        .container {
+        .main-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 900px) {
+            .main-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
             background: white;
             border-radius: 20px;
-            padding: 40px;
+            padding: 30px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            max-width: 800px;
-            width: 100%;
         }
 
         h1 {
             color: #667eea;
             margin-bottom: 10px;
-            font-size: 32px;
+            font-size: 28px;
+        }
+
+        h2 {
+            color: #374151;
+            margin-bottom: 20px;
+            font-size: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
         }
 
         .subtitle {
             color: #666;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             font-size: 14px;
         }
 
@@ -47,7 +64,7 @@
             padding: 8px 16px;
             border-radius: 20px;
             font-weight: bold;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
         }
 
         .status.connected {
@@ -68,14 +85,15 @@
         .controls {
             display: flex;
             gap: 10px;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
         }
 
         button {
             padding: 12px 24px;
             border: none;
             border-radius: 8px;
-            font-size: 16px;
+            font-size: 14px;
             font-weight: bold;
             cursor: pointer;
             transition: all 0.3s;
@@ -84,6 +102,10 @@
         button:hover {
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
         }
 
         .btn-connect {
@@ -101,6 +123,141 @@
             color: white;
         }
 
+        /* Test Command Buttons */
+        .test-commands {
+            margin-bottom: 20px;
+        }
+
+        .command-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .cmd-btn {
+            padding: 20px;
+            font-size: 16px;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .cmd-btn .icon {
+            font-size: 28px;
+        }
+
+        .cmd-btn .label {
+            font-size: 12px;
+            opacity: 0.9;
+        }
+
+        .btn-push {
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            color: white;
+        }
+
+        .btn-pull {
+            background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+            color: white;
+        }
+
+        .btn-left {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+        }
+
+        .btn-right {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+        }
+
+        .btn-lift {
+            background: linear-gradient(135deg, #ec4899, #be185d);
+            color: white;
+        }
+
+        .btn-drop {
+            background: linear-gradient(135deg, #6366f1, #4338ca);
+            color: white;
+        }
+
+        .btn-neutral {
+            background: linear-gradient(135deg, #6b7280, #4b5563);
+            color: white;
+            grid-column: span 3;
+        }
+
+        /* Confidence Slider */
+        .confidence-control {
+            background: #f3f4f6;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+
+        .confidence-control label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #374151;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .confidence-slider {
+            flex: 1;
+            height: 8px;
+            -webkit-appearance: none;
+            background: #d1d5db;
+            border-radius: 4px;
+            outline: none;
+        }
+
+        .confidence-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 24px;
+            height: 24px;
+            background: #667eea;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+
+        .confidence-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+            min-width: 60px;
+            text-align: center;
+        }
+
+        /* Quick Actions */
+        .quick-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn-sequence {
+            background: linear-gradient(135deg, #14b8a6, #0d9488);
+            color: white;
+            flex: 1;
+        }
+
+        .btn-ramp {
+            background: linear-gradient(135deg, #f97316, #ea580c);
+            color: white;
+            flex: 1;
+        }
+
+        /* Current Action Display */
         .current-action {
             background: #f3f4f6;
             border-radius: 12px;
@@ -114,26 +271,43 @@
         }
 
         .action-display {
-            font-size: 48px;
+            font-size: 42px;
             font-weight: bold;
             color: #667eea;
             text-align: center;
-            padding: 20px;
+            padding: 15px;
             background: white;
             border-radius: 8px;
             margin-bottom: 10px;
+            text-transform: uppercase;
         }
 
         .confidence-display {
-            font-size: 24px;
+            font-size: 20px;
             color: #6b7280;
             text-align: center;
         }
 
+        .confidence-bar {
+            height: 10px;
+            background: #e5e7eb;
+            border-radius: 5px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+
+        /* Stats */
         .stats {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 15px;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
             margin-bottom: 20px;
         }
 
@@ -145,38 +319,57 @@
         }
 
         .stat-label {
-            font-size: 12px;
+            font-size: 11px;
             color: #6b7280;
             margin-bottom: 5px;
+            text-transform: uppercase;
         }
 
         .stat-value {
-            font-size: 24px;
+            font-size: 20px;
             font-weight: bold;
             color: #374151;
         }
 
+        /* Event Log */
         .event-log {
             background: #1f2937;
             border-radius: 12px;
             padding: 20px;
-            max-height: 400px;
+            max-height: 300px;
             overflow-y: auto;
         }
 
         .event-log h3 {
             color: white;
             margin-bottom: 15px;
+            font-size: 16px;
         }
 
         .log-entry {
             background: #374151;
-            padding: 10px;
+            padding: 8px 12px;
             border-radius: 6px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             font-family: 'Courier New', monospace;
-            font-size: 12px;
+            font-size: 11px;
             color: #d1d5db;
+        }
+
+        .log-entry.sent {
+            border-left: 3px solid #10b981;
+        }
+
+        .log-entry.received {
+            border-left: 3px solid #3b82f6;
+        }
+
+        .log-entry.error {
+            border-left: 3px solid #ef4444;
+        }
+
+        .log-entry.info {
+            border-left: 3px solid #f59e0b;
         }
 
         .log-action {
@@ -191,91 +384,211 @@
         .log-timestamp {
             color: #9ca3af;
         }
+
+        /* Send indicator */
+        .send-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #10b981;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+            opacity: 0;
+            transform: translateY(-20px);
+            transition: all 0.3s;
+            z-index: 1000;
+        }
+
+        .send-indicator.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🧠 BCI Orchestrator Test Client</h1>
-        <div class="subtitle">Real-time brain command monitor</div>
+    <div class="send-indicator" id="sendIndicator">Command Sent!</div>
 
-        <div id="status" class="status disconnected">DISCONNECTED</div>
+    <div class="main-container">
+        <!-- Left Panel: Test Controls -->
+        <div class="panel">
+            <h1>🎮 Test Controls</h1>
+            <div class="subtitle">Send test commands to the BCI Orchestrator</div>
 
-        <div class="controls">
-            <button class="btn-connect" onclick="connect()">Connect</button>
-            <button class="btn-disconnect" onclick="disconnect()">Disconnect</button>
-            <button class="btn-clear" onclick="clearLogs()">Clear Logs</button>
+            <div id="status" class="status disconnected">DISCONNECTED</div>
+
+            <div class="controls">
+                <button class="btn-connect" onclick="connect()">Connect</button>
+                <button class="btn-disconnect" onclick="disconnect()">Disconnect</button>
+            </div>
+
+            <div class="test-commands">
+                <h2>🧠 Mental Commands</h2>
+                
+                <div class="confidence-control">
+                    <label>Confidence Level</label>
+                    <div class="slider-container">
+                        <input type="range" class="confidence-slider" id="confidenceSlider" 
+                               min="0" max="100" value="85" oninput="updateConfidenceDisplay()">
+                        <div class="confidence-value" id="confidenceValue">0.85</div>
+                    </div>
+                </div>
+
+                <div class="command-grid">
+                    <button class="cmd-btn btn-push" onclick="sendCommand('push')">
+                        <span class="icon">⬆️</span>
+                        <span class="label">PUSH</span>
+                    </button>
+                    <button class="cmd-btn btn-lift" onclick="sendCommand('lift')">
+                        <span class="icon">🚀</span>
+                        <span class="label">LIFT</span>
+                    </button>
+                    <button class="cmd-btn btn-pull" onclick="sendCommand('pull')">
+                        <span class="icon">⬇️</span>
+                        <span class="label">PULL</span>
+                    </button>
+                    <button class="cmd-btn btn-left" onclick="sendCommand('left')">
+                        <span class="icon">⬅️</span>
+                        <span class="label">LEFT</span>
+                    </button>
+                    <button class="cmd-btn btn-drop" onclick="sendCommand('drop')">
+                        <span class="icon">⏬</span>
+                        <span class="label">DROP</span>
+                    </button>
+                    <button class="cmd-btn btn-right" onclick="sendCommand('right')">
+                        <span class="icon">➡️</span>
+                        <span class="label">RIGHT</span>
+                    </button>
+                    <button class="cmd-btn btn-neutral" onclick="sendCommand('neutral')">
+                        <span class="icon">⏹️</span>
+                        <span class="label">NEUTRAL (Stop)</span>
+                    </button>
+                </div>
+
+                <h2>⚡ Quick Actions</h2>
+                <div class="quick-actions">
+                    <button class="cmd-btn btn-sequence" onclick="runSequence()">
+                        <span class="icon">🔄</span>
+                        <span class="label">Run Test Sequence</span>
+                    </button>
+                    <button class="cmd-btn btn-ramp" onclick="runRamp()">
+                        <span class="icon">📈</span>
+                        <span class="label">Confidence Ramp</span>
+                    </button>
+                </div>
+            </div>
         </div>
 
-        <div class="current-action">
-            <h3>Current Action</h3>
-            <div class="action-display" id="currentAction">neutral</div>
-            <div class="confidence-display">Confidence: <span id="currentConfidence">0.00</span></div>
-        </div>
+        <!-- Right Panel: Monitor -->
+        <div class="panel">
+            <h1>📊 Monitor</h1>
+            <div class="subtitle">Real-time brain command visualization</div>
 
-        <div class="stats">
-            <div class="stat-box">
-                <div class="stat-label">Total Events</div>
-                <div class="stat-value" id="totalEvents">0</div>
+            <div class="current-action">
+                <h3>Current Action</h3>
+                <div class="action-display" id="currentAction">NEUTRAL</div>
+                <div class="confidence-display">
+                    Confidence: <span id="currentConfidence">0.00</span>
+                </div>
+                <div class="confidence-bar">
+                    <div class="confidence-fill" id="confidenceFill" style="width: 0%"></div>
+                </div>
             </div>
-            <div class="stat-box">
-                <div class="stat-label">Avg Confidence</div>
-                <div class="stat-value" id="avgConfidence">0.00</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-label">Uptime</div>
-                <div class="stat-value" id="uptime">0s</div>
-            </div>
-        </div>
 
-        <div class="event-log">
-            <h3>Event Log</h3>
-            <div id="logContainer"></div>
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="stat-label">Events Received</div>
+                    <div class="stat-value" id="totalEvents">0</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Commands Sent</div>
+                    <div class="stat-value" id="commandsSent">0</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Avg Confidence</div>
+                    <div class="stat-value" id="avgConfidence">0.00</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Uptime</div>
+                    <div class="stat-value" id="uptime">0s</div>
+                </div>
+            </div>
+
+            <div class="event-log">
+                <h3>📝 Event Log <button class="btn-clear" onclick="clearLogs()" style="float:right;padding:5px 10px;font-size:11px;">Clear</button></h3>
+                <div id="logContainer"></div>
+            </div>
         </div>
     </div>
 
     <script>
+        // Configuration
+        const WS_URL = 'ws://127.0.0.1:8080/stream';
+        const UDP_PROXY_URL = 'http://127.0.0.1:8080/broadcast';
+        
+        // State
         let ws = null;
         let totalEvents = 0;
+        let commandsSent = 0;
         let totalConfidence = 0;
         let startTime = null;
+        let uptimeInterval = null;
 
+        // Update confidence display from slider
+        function updateConfidenceDisplay() {
+            const slider = document.getElementById('confidenceSlider');
+            const display = document.getElementById('confidenceValue');
+            const value = (slider.value / 100).toFixed(2);
+            display.textContent = value;
+        }
+
+        // Get current confidence from slider
+        function getConfidence() {
+            return document.getElementById('confidenceSlider').value / 100;
+        }
+
+        // Connect to WebSocket
         function connect() {
             if (ws && ws.readyState === WebSocket.OPEN) {
+                addLog('Already connected', 'info');
                 return;
             }
 
             updateStatus('connecting');
-            addLog('Connecting to ws://127.0.0.1:8080/stream...', 'info');
+            addLog('Connecting to ' + WS_URL + '...', 'info');
 
-            ws = new WebSocket('ws://127.0.0.1:8080/stream');
+            ws = new WebSocket(WS_URL);
 
             ws.onopen = () => {
                 updateStatus('connected');
-                addLog('Connected successfully!', 'success');
+                addLog('✓ Connected successfully!', 'info');
                 startTime = Date.now();
                 startUptimeCounter();
             };
 
             ws.onmessage = (event) => {
                 try {
-                    const brainEvent = JSON.parse(event.data);
-                    handleBrainEvent(brainEvent);
+                    const data = JSON.parse(event.data);
+                    handleBrainEvent(data);
                 } catch (error) {
-                    addLog(`Parse error: ${error.message}`, 'error');
+                    addLog('Parse error: ' + error.message, 'error');
                 }
             };
 
             ws.onerror = (error) => {
-                addLog('WebSocket error occurred', 'error');
+                addLog('WebSocket error', 'error');
                 updateStatus('disconnected');
             };
 
             ws.onclose = () => {
                 addLog('Connection closed', 'info');
                 updateStatus('disconnected');
+                stopUptimeCounter();
             };
         }
 
+        // Disconnect
         function disconnect() {
             if (ws) {
                 ws.close();
@@ -283,38 +596,133 @@
             }
         }
 
+        // Send a test command
+        async function sendCommand(action) {
+            const confidence = getConfidence();
+            
+            // Create brain event payload
+            const payload = {
+                ts: Date.now(),
+                type: 'mental_command',
+                action: action,
+                confidence: confidence,
+                durationMs: 0,
+                source: 'test-client'
+            };
+
+            try {
+                // Send via HTTP POST to broadcast endpoint
+                const response = await fetch(UDP_PROXY_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    commandsSent++;
+                    document.getElementById('commandsSent').textContent = commandsSent;
+                    addLog(`→ Sent: ${action} @ ${confidence.toFixed(2)}`, 'sent');
+                    showSendIndicator();
+                } else {
+                    addLog(`✗ Failed to send: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                addLog(`✗ Error: ${error.message}`, 'error');
+                
+                // Fallback: try WebSocket if available
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(payload));
+                    commandsSent++;
+                    document.getElementById('commandsSent').textContent = commandsSent;
+                    addLog(`→ Sent via WS: ${action} @ ${confidence.toFixed(2)}`, 'sent');
+                    showSendIndicator();
+                }
+            }
+        }
+
+        // Run test sequence
+        async function runSequence() {
+            addLog('🔄 Starting test sequence...', 'info');
+            
+            const sequence = [
+                { action: 'neutral', conf: 0.3, delay: 500 },
+                { action: 'push', conf: 0.85, delay: 1500 },
+                { action: 'neutral', conf: 0.3, delay: 300 },
+                { action: 'left', conf: 0.75, delay: 1500 },
+                { action: 'neutral', conf: 0.3, delay: 300 },
+                { action: 'right', conf: 0.80, delay: 1500 },
+                { action: 'neutral', conf: 0.3, delay: 300 },
+                { action: 'pull', conf: 0.70, delay: 1500 },
+                { action: 'neutral', conf: 0.3, delay: 300 },
+                { action: 'lift', conf: 0.90, delay: 1000 },
+                { action: 'neutral', conf: 0.3, delay: 500 }
+            ];
+
+            for (const step of sequence) {
+                document.getElementById('confidenceSlider').value = step.conf * 100;
+                updateConfidenceDisplay();
+                await sendCommand(step.action);
+                await sleep(step.delay);
+            }
+
+            addLog('✓ Test sequence complete!', 'info');
+        }
+
+        // Run confidence ramp
+        async function runRamp() {
+            addLog('📈 Starting confidence ramp...', 'info');
+            
+            // Ramp up
+            for (let i = 0; i <= 100; i += 10) {
+                document.getElementById('confidenceSlider').value = i;
+                updateConfidenceDisplay();
+                await sendCommand('push');
+                await sleep(200);
+            }
+
+            await sleep(500);
+
+            // Ramp down
+            for (let i = 100; i >= 0; i -= 10) {
+                document.getElementById('confidenceSlider').value = i;
+                updateConfidenceDisplay();
+                await sendCommand('push');
+                await sleep(200);
+            }
+
+            await sendCommand('neutral');
+            addLog('✓ Ramp complete!', 'info');
+        }
+
+        // Handle incoming brain event
         function handleBrainEvent(event) {
             totalEvents++;
-            totalConfidence += event.Confidence;
+            
+            const action = event.action || event.Action || 'unknown';
+            const confidence = event.confidence || event.Confidence || 0;
+            
+            totalConfidence += confidence;
 
-            // Update current action
-            document.getElementById('currentAction').textContent = event.Action;
-            document.getElementById('currentConfidence').textContent = event.Confidence.toFixed(2);
-
-            // Update stats
+            // Update display
+            document.getElementById('currentAction').textContent = action.toUpperCase();
+            document.getElementById('currentConfidence').textContent = confidence.toFixed(2);
+            document.getElementById('confidenceFill').style.width = (confidence * 100) + '%';
             document.getElementById('totalEvents').textContent = totalEvents;
             document.getElementById('avgConfidence').textContent = (totalConfidence / totalEvents).toFixed(2);
 
             // Add to log
-            const timestamp = new Date(event.Ts).toLocaleTimeString();
-            addLog(`[${timestamp}] Action: ${event.Action} | Confidence: ${event.Confidence.toFixed(2)} | Duration: ${event.DurationMs}ms`, 'event');
+            const timestamp = new Date().toLocaleTimeString();
+            addLog(`← [${timestamp}] ${action} @ ${confidence.toFixed(2)}`, 'received');
         }
 
+        // Add log entry
         function addLog(message, type = 'info') {
             const logContainer = document.getElementById('logContainer');
             const entry = document.createElement('div');
-            entry.className = 'log-entry';
-            
-            if (type === 'event') {
-                // Highlight action and confidence
-                entry.innerHTML = message
-                    .replace(/(Action: \w+)/, '<span class="log-action">$1</span>')
-                    .replace(/(Confidence: [\d.]+)/, '<span class="log-confidence">$1</span>')
-                    .replace(/(\[.*?\])/, '<span class="log-timestamp">$1</span>');
-            } else {
-                entry.textContent = message;
-            }
-
+            entry.className = 'log-entry ' + type;
+            entry.textContent = message;
             logContainer.insertBefore(entry, logContainer.firstChild);
 
             // Keep only last 50 entries
@@ -323,23 +731,34 @@
             }
         }
 
+        // Clear logs
         function clearLogs() {
             document.getElementById('logContainer').innerHTML = '';
             totalEvents = 0;
+            commandsSent = 0;
             totalConfidence = 0;
             document.getElementById('totalEvents').textContent = '0';
+            document.getElementById('commandsSent').textContent = '0';
             document.getElementById('avgConfidence').textContent = '0.00';
-            addLog('Logs cleared', 'info');
         }
 
+        // Update connection status
         function updateStatus(status) {
             const statusEl = document.getElementById('status');
             statusEl.className = 'status ' + status;
             statusEl.textContent = status.toUpperCase();
         }
 
+        // Show send indicator
+        function showSendIndicator() {
+            const indicator = document.getElementById('sendIndicator');
+            indicator.classList.add('show');
+            setTimeout(() => indicator.classList.remove('show'), 500);
+        }
+
+        // Uptime counter
         function startUptimeCounter() {
-            setInterval(() => {
+            uptimeInterval = setInterval(() => {
                 if (startTime) {
                     const uptime = Math.floor((Date.now() - startTime) / 1000);
                     const minutes = Math.floor(uptime / 60);
@@ -349,6 +768,36 @@
                 }
             }, 1000);
         }
+
+        function stopUptimeCounter() {
+            if (uptimeInterval) {
+                clearInterval(uptimeInterval);
+                uptimeInterval = null;
+            }
+        }
+
+        // Utility sleep function
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Initialize
+        updateConfidenceDisplay();
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+            
+            switch(e.key.toLowerCase()) {
+                case 'w': sendCommand('push'); break;
+                case 's': sendCommand('pull'); break;
+                case 'a': sendCommand('left'); break;
+                case 'd': sendCommand('right'); break;
+                case ' ': sendCommand('lift'); e.preventDefault(); break;
+                case 'c': sendCommand('drop'); break;
+                case 'x': sendCommand('neutral'); break;
+            }
+        });
 
         // Auto-connect on load
         window.addEventListener('load', () => {
