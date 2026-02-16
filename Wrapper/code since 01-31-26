@@ -2,7 +2,6 @@
 using System;
 using System.Net.Sockets; 
 using System.Text; 
-using System.Text.Json;      
 using System.Globalization;
 using System.Net;
 using System.Net.WebSockets;
@@ -12,6 +11,14 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Linq;
 
+// Graceful shutdown handler
+var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (sender, e) =>
+{
+    e.Cancel = true; // Prevent immediate termination
+    Console.WriteLine("\nShutdown requested...");
+    cts.Cancel();
+};
 
 //---------------------------------------------------------------------------------
 //------------------------simple settings------------------------------------------
@@ -24,14 +31,25 @@ int rateHz = 15;        // cap frequency
 int udpPort = 7400;
 int httpPort = 8080;   // used by the WebSocket server (ws://127.0.0.1:8080/stream)
 
+// Security limits
+const int MaxWebSocketClients = 100;  // Prevent memory exhaustion
+const int MaxPacketsPerSecond = 1000; // UDP flood protection
+const int MaxPacketSize = 2048;       // Maximum UDP packet size
+const int MaxCsvLength = 256;         // Maximum CSV string length
+const int MaxActionNameLength = 50;   // Maximum action name length
+
 bool keyboardMode = false;  // default: OFF for safety
-// Parse CLI flags: --keys to enable, --no-keys to force disable
+bool verboseLogging = false;
+
+// Parse CLI flags: --keys to enable, --no-keys to force disable, --verbose for detailed logging
 foreach (var arg in args)
 {
     if (arg.Equals("--keys", StringComparison.OrdinalIgnoreCase))
         keyboardMode = true;
     else if (arg.Equals("--no-keys", StringComparison.OrdinalIgnoreCase))
         keyboardMode = false;
+    else if (arg.Equals("--verbose", StringComparison.OrdinalIgnoreCase))
+        verboseLogging = true;
 }
 
 
@@ -56,6 +74,10 @@ DateTime lastPrintAt    =DateTime.MinValue;
 string lastPrintedLine = "";
 string lastJson = "";        // drop duplicates
 
+// UDP rate limiting
+DateTime lastRateLimitReset = DateTime.UtcNow;
+int packetsThisSecond = 0;
+
 //webSocket Clients
 var clients = new System.Collections.Generic.List<WebSocket>();
 object clientslock = new();
@@ -71,6 +93,9 @@ Console.WriteLine("Send:             action,confidence   e.g.  push,0.82");
 Console.WriteLine($"Debounce:         {DebounceMs} ms");
 Console.WriteLine($"Rate limit:       {rateHz} Hz");
 Console.WriteLine($"Keyboard mode:    {(keyboardMode ? "ON  (--keys)" : "OFF (default, use --keys)")}"); 
+Console.WriteLine($"Verbose logging:  {(verboseLogging ? "ON  (--verbose)" : "OFF")}");
+Console.WriteLine($"Max WS clients:   {MaxWebSocketClients}");
+Console.WriteLine($"Max UDP pkt/sec:  {MaxPacketsPerSecond}");
 Console.WriteLine("------------------------------------------------");
 
 
@@ -88,18 +113,35 @@ using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, udpPort));
 
 
 //---------------------------------MAIN loop------------------------------------------------------------------------
-while (true)
+while (!cts.Token.IsCancellationRequested)
 {
     try
     {
         if (udp.Available > 0)
         {
+            // Rate limit: prevent UDP flood
+            var now = DateTime.UtcNow;
+            if ((now - lastRateLimitReset).TotalSeconds >= 1.0)
+            {
+                packetsThisSecond = 0;
+                lastRateLimitReset = now;
+            }
+            
+            packetsThisSecond++;
+            if (packetsThisSecond > MaxPacketsPerSecond)
+            {
+                Console.WriteLine($"Warning: UDP rate limit exceeded ({MaxPacketsPerSecond}/sec)");
+                await Task.Delay(10); // Back off
+                continue;
+            }
 
 
             var res = await udp.ReceiveAsync(); //1 UDP packet
-            const int MaxPacket = 2048; // tune as needed
-            if (res.Buffer.Length == 0 || res.Buffer.Length > MaxPacket)
+            if (res.Buffer.Length == 0 || res.Buffer.Length > MaxPacketSize)
+            {
+                LogVerbose($"Rejected packet: size={res.Buffer.Length} (max={MaxPacketSize})");
                 continue;
+            }
 
             string action;
             double conf;
@@ -113,12 +155,45 @@ while (true)
             else
             {
                 // 2) Fallback to CSV: "action,confidence"
-                string text = Encoding.UTF8.GetString(res.Buffer).Trim();
+                string text;
+                try
+                {
+                    text = Encoding.UTF8.GetString(res.Buffer).Trim();
+                }
+                catch (Exception)
+                {
+                    LogVerbose("Rejected packet: invalid UTF-8 encoding");
+                    continue; // Invalid UTF-8 encoding
+                }
+                
+                // Reject excessively long strings
+                if (text.Length > MaxCsvLength)
+                {
+                    Console.WriteLine($"Warning: Rejected oversized CSV packet (length={text.Length})");
+                    continue;
+                }
+                
                 var parts = text.Split(',');
                 if (parts.Length != 2) continue;
 
                 action = parts[0].Trim().ToLowerInvariant();
-                if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out conf)) continue;
+                
+                // Validate action name (only alphanumeric and underscore)
+                if (string.IsNullOrEmpty(action) || action.Length > MaxActionNameLength || !IsValidActionName(action))
+                {
+                    Console.WriteLine($"Warning: Rejected invalid action name: {action}");
+                    continue;
+                }
+                
+                if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out conf))
+                    continue;
+                    
+                // Validate confidence range
+                if (conf < 0.0 || conf > 1.0 || double.IsNaN(conf) || double.IsInfinity(conf))
+                {
+                    Console.WriteLine($"Warning: Rejected invalid confidence value: {conf}");
+                    continue;
+                }
 
                 lastSource = "csv";
                 lastConfidence = conf;
@@ -140,7 +215,7 @@ while (true)
 
 
             //apply Debounce
-            var now = DateTime.UtcNow;
+            now = DateTime.UtcNow;
 
             if (desired != candidate)
             {
@@ -203,22 +278,47 @@ catch (Exception ex)
 
 }
 
+// Cleanup on shutdown
+Console.WriteLine("Releasing any held keys...");
+if (keyboardMode && currentKeyDown != 0)
+{
+    SendKey(currentKeyDown, KeyEventFlags.KEYUP);
+}
+
+Console.WriteLine("Closing WebSocket connections...");
+lock (clientslock)
+{
+    foreach (var ws in clients)
+    {
+        try
+        {
+            if (ws.State == WebSocketState.Open)
+                ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server shutdown", CancellationToken.None).Wait(1000);
+            ws.Dispose();
+        }
+        catch { }
+    }
+    clients.Clear();
+}
+
+Console.WriteLine("Shutdown complete.");
+
 //-----------------------------------------------------------------------
 // HELPER: BUILD JSON STRING
 //-----------------------------------------------------------------------
 string BuildJson(string action, double conf, int durationMs, string source)
 {
-    var payload = new
+    // Manual JSON construction to avoid reflection issues in .NET 8+
+    try
     {
-        ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        type = "mental_command",
-        action = action,
-        confidence = conf,
-        durationMs = durationMs,
-        raw = new { source = source }
-    };
-
-    return JsonSerializer.Serialize(payload);
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return $"{{\"ts\":{ts},\"type\":\"mental_command\",\"action\":\"{action}\",\"confidence\":{conf:F2},\"durationMs\":{durationMs},\"raw\":{{\"source\":\"{source}\"}}}}";
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"JSON build error: {ex.Message}");
+        return "{\"error\":\"serialization_failed\"}";
+    }
 }
 
 
@@ -228,163 +328,161 @@ string BuildJson(string action, double conf, int durationMs, string source)
 //-----------------------------------------------------------------------
 async Task BroadcastAsync(string json)
 {
-    byte[] bytes = Encoding.UTF8.GetBytes(json);
-
-    List<WebSocket> snapshot;
+    List<WebSocket> deadClients = new();
+    
     lock (clientslock)
-        snapshot = clients.Where(ws => ws.State == WebSocketState.Open).ToList();
-
-    var dead = new List<WebSocket>();
-
-    foreach (var ws in snapshot)
     {
-        try
+        if (clients.Count == 0) return;
+        
+        // Remove dead connections proactively
+        clients.RemoveAll(ws => ws.State != WebSocketState.Open && ws.State != WebSocketState.Connecting);
+    }
+
+    byte[] msg = Encoding.UTF8.GetBytes(json);
+    var tasks = new List<Task>();
+
+    lock (clientslock)
+    {
+        foreach (var ws in clients)
         {
-            await ws.SendAsync(new ArraySegment<byte>(bytes),
-                               WebSocketMessageType.Text,
-                               endOfMessage: true,
-                               CancellationToken.None);
-        }
-        catch
-        {
-            dead.Add(ws);
+            if (ws.State == WebSocketState.Open)
+            {
+                tasks.Add(SendWithTimeout(ws, msg));
+            }
+            else if (ws.State == WebSocketState.Closed || ws.State == WebSocketState.Aborted)
+            {
+                deadClients.Add(ws);
+            }
         }
     }
 
-    if (dead.Count > 0)
+    // Clean up dead clients
+    if (deadClients.Count > 0)
     {
         lock (clientslock)
         {
-            foreach (var d in dead)
-                clients.Remove(d);
-        }
-
-        foreach (var d in dead)
-        {
-            try { d.Dispose(); } catch { }
+            foreach (var ws in deadClients)
+                clients.Remove(ws);
         }
     }
-}
-
-// Try to parse an OSC packet into (action, confidence).
-// Also logs address, tags, and argument values so we can see what Emotiv sends.
-bool TryParseOsc(byte[] data, out string action, out double conf)
-{
-    action = "neutral";
-    conf = 0.0;
 
     try
     {
-        int i = 0;
-
-        // 1) Address (e.g. "/Emotiv/MentalCommand")
-        string addr = ReadOscString(data, ref i);
-        Console.WriteLine($"[OSC-ADDR] {addr}");
-
-        // 2) Typetags (e.g. ",sf" meaning: string, float)
-        if (i >= data.Length || data[i] != (byte)',')
-        {
-            Console.WriteLine("[OSC] no typetags, not OSC?");
-            return false;
-        }
-
-        string tags = ReadOscString(data, ref i);
-        Console.WriteLine($"[OSC-TAGS] {tags}");
-
-        // 3) Read arguments according to typetags
-        var values = new List<object>();
-
-        for (int t = 1; t < tags.Length; t++) // skip leading ','
-        {
-            char tag = tags[t];
-            switch (tag)
-            {
-                case 's':
-                    {
-                        string s = ReadOscString(data, ref i);
-                        values.Add(s);
-                        Console.WriteLine($"[OSC-ARG] string: {s}");
-                        break;
-                    }
-                case 'f':
-                    {
-                        float f = ReadOscFloatBE(data, ref i);
-                        values.Add(f);
-                        Console.WriteLine($"[OSC-ARG] float: {f}");
-                        break;
-                    }
-                default:
-                    // skip/align for unsupported types
-                    Align4(ref i);
-                    Console.WriteLine($"[OSC-ARG] unsupported tag '{tag}', skipping");
-                    break;
-            }
-        }
-
-        // 4) Simple mapping:
-        //    - first string  -> action
-        //    - first float   -> confidence
-        string? parsedAction = null;
-        float?  parsedFloat  = null;
-
-        foreach (var v in values)
-        {
-            if (v is string s && parsedAction == null)
-                parsedAction = s;
-            else if (v is float f && !parsedFloat.HasValue)
-                parsedFloat = f;
-        }
-
-        if (!string.IsNullOrWhiteSpace(parsedAction) && parsedFloat.HasValue)
-        {
-            action = parsedAction!.Trim().ToLowerInvariant();
-            conf = parsedFloat.Value;
-            Console.WriteLine($"[OSC-PARSED] action={action}, conf={conf:0.00}");
-            return true;
-        }
-
-        Console.WriteLine("[OSC] did not find both string action and float confidence");
-        return false;
+        await Task.WhenAll(tasks);
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[OSC-ERROR] {ex.Message}");
+        LogVerbose($"Broadcast error: {ex.Message}");
+    }
+}
+
+async Task SendWithTimeout(WebSocket ws, byte[] msg)
+{
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    try
+    {
+        await ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, cts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        LogVerbose("WebSocket send timeout - client may be unresponsive");
+    }
+    catch (Exception ex)
+    {
+        LogVerbose($"WebSocket send failed: {ex.Message}");
+    }
+}
+
+void LogVerbose(string message)
+{
+    if (verboseLogging)
+        Console.WriteLine($"[VERBOSE] {message}");
+}
+
+static bool IsValidActionName(string name)
+{
+    return name.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '-');
+}
+
+//-----------------------------------------------------------------------
+// OSC PARSER
+// Minimal Open Sound Control decoder that can extract:
+//   /address ,typetags arg1 arg2 ...
+// We only care about a single float argument (e.g. for confidence).
+//-----------------------------------------------------------------------
+static bool TryParseOsc(byte[] data, out string action, out double conf)
+{
+    action = null;
+    conf = 0.0;
+
+    if (data == null || data.Length < 8 || data.Length > 2048)
+        return false;
+
+    try
+    {
+        int idx = 0;
+
+        // 1) Address (null-terminated C string, 4-byte aligned)
+        int addrStart = idx;
+        int maxAddrLen = Math.Min(data.Length, 256); // Prevent runaway string parsing
+        
+        while (idx < maxAddrLen && data[idx] != 0) idx++;
+        if (idx >= data.Length || idx >= maxAddrLen) return false;
+
+        string address = Encoding.ASCII.GetString(data, addrStart, idx - addrStart);
+        idx++; // skip null
+        Align4(ref idx);
+        
+        if (idx >= data.Length) return false;
+
+        // 2) Type-tag string: e.g. ",f" (comma + 'f' for float, then null, then 4-byte align)
+        int typeStart = idx;
+        while (idx < data.Length && data[idx] != 0) idx++;
+        if (idx >= data.Length) return false;
+
+        string typeTags = Encoding.ASCII.GetString(data, typeStart, idx - typeStart);
+        idx++; // skip null
+        Align4(ref idx);
+        if (idx >= data.Length) return false;
+
+        // We expect ",f" or ",ff" or similar. At least one 'f'.
+        if (!typeTags.Contains('f')) return false;
+
+        // 3) Read first float arg
+        if (idx + 4 > data.Length) return false;
+        float val = ReadFloat32BigEndian(data, idx);
+        idx += 4;
+
+        // 4) Parse address for the action name
+        //    e.g. "/mentalCommand/push" or "/push"
+        var parts = address.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return false;
+
+        // For multi-level paths, pick last segment
+        // e.g. "/mentalCommand/push" -> "push"
+        action = parts[parts.Length - 1].ToLowerInvariant();
+
+        // Convert float to double for conf
+        conf = (double)val;
+
+        // Some sanity checks
+        if (double.IsNaN(conf) || double.IsInfinity(conf) || conf < 0.0 || conf > 1.0)
+            return false;
+
+        return true;
+    }
+    catch
+    {
         return false;
     }
 
-    // ---------- helpers below ----------
-
-    static string ReadOscString(byte[] buf, ref int idx)
-{
-    int start = idx;
-
-    // Find null terminator
-    while (idx < buf.Length && buf[idx] != 0) idx++;
-    if (idx >= buf.Length)
-        throw new FormatException("OSC string missing terminator");
-
-    string s = Encoding.ASCII.GetString(buf, start, idx - start);
-
-    // Move past the terminator byte
-    idx++;
-
-    // Pad to 4-byte boundary exactly once (OSC rule)
-    int pad = (4 - (idx % 4)) % 4;
-    idx += pad;
-
-    if (idx > buf.Length)
-        throw new FormatException("OSC string padding overrun");
-
-    return s;
-}
-
-
-    // OSC floats are big-endian (network order)
-    static float ReadOscFloatBE(byte[] buf, ref int idx)
+    // Reads 4 bytes as big-endian float
+    static float ReadFloat32BigEndian(byte[] data, int idx)
     {
-        if (idx + 4 > buf.Length) return 0f;
-        byte b0 = buf[idx], b1 = buf[idx + 1], b2 = buf[idx + 2], b3 = buf[idx + 3];
-        idx += 4;
+        byte b0 = data[idx];
+        byte b1 = data[idx + 1];
+        byte b2 = data[idx + 2];
+        byte b3 = data[idx + 3];
 
         if (BitConverter.IsLittleEndian)
             return BitConverter.ToSingle(new byte[] { b3, b2, b1, b0 }, 0);
@@ -428,21 +526,55 @@ void StartHttpAndWebSocketServer()
 
         Console.WriteLine($"HTTP/WS listening on http://127.0.0.1:{httpPort}/  (WS: /stream, HTTP: /state, /healthz)");
 
-        while (true)
+        while (!cts.Token.IsCancellationRequested)
         {
             HttpListenerContext ctx;
             try { ctx = await listener.GetContextAsync(); }
             catch { break; } // listener stopped
+
+            // Validate request is from localhost only
+            if (!ctx.Request.IsLocal)
+            {
+                Console.WriteLine($"Warning: Rejected non-local request from {ctx.Request.RemoteEndPoint}");
+                ctx.Response.StatusCode = 403;
+                ctx.Response.Close();
+                continue;
+            }
+
+            // Validate URL path to prevent path traversal
+            if (ctx.Request.RawUrl.Contains("..") || ctx.Request.RawUrl.Contains("%2e"))
+            {
+                Console.WriteLine($"Warning: Rejected suspicious URL: {ctx.Request.RawUrl}");
+                ctx.Response.StatusCode = 400;
+                ctx.Response.Close();
+                continue;
+            }
 
             // 1) WebSocket endpoint: /stream
             if (ctx.Request.IsWebSocketRequest && ctx.Request.RawUrl == "/stream")
             {
                 try
                 {
+                    // Enforce maximum client limit
+                    lock (clientslock)
+                    {
+                        if (clients.Count >= MaxWebSocketClients)
+                        {
+                            Console.WriteLine($"WebSocket connection rejected: maximum {MaxWebSocketClients} clients reached");
+                            ctx.Response.StatusCode = 503; // Service Unavailable
+                            ctx.Response.Close();
+                            continue;
+                        }
+                    }
+
                     var wsContext = await ctx.AcceptWebSocketAsync(subProtocol: null);
                     var ws = wsContext.WebSocket;
 
-                    lock (clientslock) clients.Add(ws);
+                    lock (clientslock)
+                    {
+                        clients.Add(ws);
+                        Console.WriteLine($"WebSocket client connected ({clients.Count}/{MaxWebSocketClients})");
+                    }
 
                     // background loop to detect close
                     _ = Task.Run(async () =>
@@ -459,7 +591,11 @@ void StartHttpAndWebSocketServer()
                         catch { /* ignore */ }
                         finally
                         {
-                            lock (clientslock) clients.Remove(ws);
+                            lock (clientslock)
+                            {
+                                clients.Remove(ws);
+                                Console.WriteLine($"WebSocket client disconnected ({clients.Count}/{MaxWebSocketClients})");
+                            }
                             try { ws.Dispose(); } catch { }
                         }
                     });
@@ -514,6 +650,8 @@ void StartHttpAndWebSocketServer()
                 ctx.Response.OutputStream.Close();
             }
         }
+        
+        listener.Stop();
     });
 }
 
