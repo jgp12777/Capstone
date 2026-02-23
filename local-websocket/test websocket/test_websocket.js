@@ -1,19 +1,50 @@
 const WebSocket = require('ws');
+const readline = require('readline');
 
 const wss = new WebSocket.Server({ port: 8080 });
 
 console.log("WebSocket server running on ws://localhost:8080");
+console.log("Type: right, left, push, pull, neutral");
+console.log("Press Ctrl+C to stop.\n");
+
+let connectedClient = null;
 
 wss.on('connection', function connection(ws) {
   console.log("Client connected!");
+  connectedClient = ws;
 
-  setInterval(() => {
+  ws.on('close', () => {
+    console.log("Client disconnected");
+    connectedClient = null;
+  });
+});
+
+// Setup terminal input
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+// Listen for user input
+rl.on('line', (input) => {
+  const command = input.trim().toLowerCase();
+
+  const validCommands = ["right", "left", "push", "pull", "neutral"];
+
+  if (!validCommands.includes(command)) {
+    console.log("Invalid command. Use: right, left, push, pull, neutral");
+    return;
+  }
+
+  if (connectedClient && connectedClient.readyState === WebSocket.OPEN) {
     const message = JSON.stringify({
-      command: "right",
+      command: command,
       confidence: 0.9
     });
 
-    ws.send(message);
+    connectedClient.send(message);
     console.log("Sent:", message);
-  }, 1000);
+  } else {
+    console.log("No client connected.");
+  }
 });
