@@ -285,7 +285,10 @@ namespace BciOrchestrator
                 }
                 File.AppendAllText(_currentLogFile, message + Environment.NewLine);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LOG ERROR] Failed to write log: {ex.Message}");
+            }
         }
 
         public void Debug(string message, string? context = null) => Log(LogLevel.DEBUG, message, context);
@@ -320,6 +323,8 @@ namespace BciOrchestrator
 
     public class IntegratedWebSocketServer
     {
+        private static readonly string? _broadcastSecret = Environment.GetEnvironmentVariable("BCI_BROADCAST_TOKEN");
+
         private HttpListener? _httpListener;
         private readonly List<WebSocket> _clients = new();
         private readonly object _clientsLock = new();
@@ -354,6 +359,9 @@ namespace BciOrchestrator
 
         public async Task StartAsync(CancellationToken ct)
         {
+            if (string.IsNullOrEmpty(_broadcastSecret))
+                _logger.Warn("BCI_BROADCAST_TOKEN is not set — broadcast endpoint (/broadcast) will reject all requests with 401. Set the env var to enable it.", "WS-SERVER");
+
             _ct = ct;
             string host = _config.WebSocket.Host;
             int port = _config.WebSocket.Port;
@@ -463,9 +471,21 @@ namespace BciOrchestrator
                 _connectionCount++;
                 _logger.Debug($"WebSocket client connected", "WS-SERVER");
 
+                const int MaxClients = 100;
+                bool isFull = false;
                 lock (_clientsLock)
                 {
-                    _clients.Add(ws);
+                    if (_clients.Count(c => c.State == WebSocketState.Open) >= MaxClients)
+                        isFull = true;
+                    else
+                        _clients.Add(ws);
+                }
+
+                if (isFull)
+                {
+                    _logger.Warn("Max WebSocket clients reached, rejecting connection.", "WS-SERVER");
+                    await ws.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Server full", CancellationToken.None);
+                    return;
                 }
 
                 var buffer = new byte[_config.WebSocket.BufferSize];
@@ -511,8 +531,52 @@ namespace BciOrchestrator
 
         private async Task HandleBroadcastRequestAsync(HttpListenerContext context)
         {
+            // Only allow from localhost
+            string? clientIp = context.Request.RemoteEndPoint?.Address.ToString();
+            if (clientIp != "127.0.0.1" && clientIp != "::1")
+            {
+                context.Response.StatusCode = 403;
+                context.Response.Close();
+                return;
+            }
+
+            // Require secret token header (set BCI_BROADCAST_TOKEN env var to enable)
+            string? token = context.Request.Headers["X-Broadcast-Token"];
+            if (string.IsNullOrEmpty(_broadcastSecret) || token != _broadcastSecret)
+            {
+                context.Response.StatusCode = 401;
+                context.Response.Close();
+                return;
+            }
+
+            // Enforce size limit
+            const int MaxBroadcastBytes = 4096;
+            if (context.Request.ContentLength64 > MaxBroadcastBytes)
+            {
+                context.Response.StatusCode = 413;
+                context.Response.Close();
+                return;
+            }
+
             using var reader = new StreamReader(context.Request.InputStream);
             string json = await reader.ReadToEndAsync();
+
+            if (json.Length > MaxBroadcastBytes)
+            {
+                context.Response.StatusCode = 413;
+                context.Response.Close();
+                return;
+            }
+
+            // Validate it is real JSON
+            try { JsonDocument.Parse(json); }
+            catch
+            {
+                context.Response.StatusCode = 400;
+                context.Response.Close();
+                return;
+            }
+
             await BroadcastAsync(json);
             context.Response.StatusCode = 200;
             context.Response.Close();
@@ -568,7 +632,10 @@ namespace BciOrchestrator
                     await client.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
                     Interlocked.Increment(ref _messagesSent);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    _logger.Debug($"Failed to send to client: {ex.Message}", "WS-SERVER");
+                }
             }
         }
 
@@ -654,8 +721,8 @@ namespace BciOrchestrator
 
             try
             {
-                _udpClient = new UdpClient(port);
-                _logger.Info($"UDP Receiver listening on port {port}", "UDP-RECV");
+                _udpClient = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
+                _logger.Info($"UDP Receiver listening on 127.0.0.1:{port}", "UDP-RECV");
             }
             catch (SocketException ex)
             {
@@ -670,7 +737,14 @@ namespace BciOrchestrator
                     if (_udpClient.Available > 0)
                     {
                         var result = await _udpClient.ReceiveAsync(ct);
-                        await ProcessPacketAsync(result.Buffer);
+                        if (result.Buffer.Length > 512)
+                        {
+                            _logger.Warn($"Oversized UDP packet ({result.Buffer.Length} bytes) dropped.", "UDP-RECV");
+                        }
+                        else
+                        {
+                            await ProcessPacketAsync(result.Buffer, result.RemoteEndPoint);
+                        }
                     }
                     else
                     {
@@ -690,8 +764,14 @@ namespace BciOrchestrator
             _udpClient.Close();
         }
 
-        private async Task ProcessPacketAsync(byte[] buffer)
+        private async Task ProcessPacketAsync(byte[] buffer, IPEndPoint sender)
         {
+            if (!IPAddress.IsLoopback(sender.Address))
+            {
+                _logger.Warn($"Rejected UDP packet from non-localhost: {sender.Address}", "UDP-RECV");
+                return;
+            }
+
             _packetsReceived++;
 
             string action;
@@ -925,7 +1005,8 @@ namespace BciOrchestrator
             catch (Exception ex)
             {
                 Console.WriteLine($"[ERROR] Fatal: {ex.Message}");
-                Console.WriteLine(ex.StackTrace);
+                // Stack trace goes to log file only, not console
+                orchestrator._logger?.Error("Fatal exception", "MAIN", ex);
             }
             finally
             {
@@ -964,6 +1045,9 @@ namespace BciOrchestrator
                     case "--allow-lan":
                         _config.WebSocket.AllowLAN = true;
                         _config.WebSocket.Host = "0.0.0.0";
+                        Console.WriteLine("[SECURITY WARNING] --allow-lan: WebSocket server will be exposed to ALL network interfaces.");
+                        Console.WriteLine("[SECURITY WARNING] Ensure you are on a trusted network.");
+                        Console.Out.Flush();
                         break;
 
                     case "--port":
@@ -984,11 +1068,12 @@ namespace BciOrchestrator
         {
             try
             {
-                // Try to load config file
-                if (File.Exists("./appsettings.json"))
+                // Try to load config file (always resolved relative to the executable directory)
+                string configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+                if (File.Exists(configPath))
                 {
                     Console.WriteLine("[INIT] Loading appsettings.json...");
-                    string json = File.ReadAllText("./appsettings.json");
+                    string json = File.ReadAllText(configPath);
                     var loaded = JsonSerializer.Deserialize<OrchestratorConfig>(json);
                     if (loaded != null)
                     {

@@ -620,7 +620,7 @@ namespace EmotivUnityPlugin
         {
             JObject param = new JObject(
                     new JProperty("clientId", Config.AppClientId),
-                    new JProperty("clientSecret", Config.AppClientSecret)
+                    new JProperty("clientSecret", Config.GetClientSecret())
                 );
             SendTextMessage(param, "hasAccessRight", true);
         }
@@ -629,7 +629,7 @@ namespace EmotivUnityPlugin
         {
             JObject param = new JObject(
                     new JProperty("clientId", Config.AppClientId),
-                    new JProperty("clientSecret", Config.AppClientSecret)
+                    new JProperty("clientSecret", Config.GetClientSecret())
                 );
             SendTextMessage(param, "requestAccess", true);
         }
@@ -638,7 +638,7 @@ namespace EmotivUnityPlugin
         {
             JObject param = new JObject();
             param.Add("clientId", Config.AppClientId);
-            param.Add("clientSecret", Config.AppClientSecret);
+            param.Add("clientSecret", Config.GetClientSecret());
             if (!String.IsNullOrEmpty(licenseID)) {
                 param.Add("license", licenseID);
             }
@@ -652,7 +652,7 @@ namespace EmotivUnityPlugin
         {
             JObject param = new JObject();
             param.Add("clientId", Config.AppClientId);
-            param.Add("clientSecret", Config.AppClientSecret);
+            param.Add("clientSecret", Config.GetClientSecret());
             param.Add("code", code);
             SendTextMessage(param, "loginWithAuthenticationCode", true);
         }
@@ -687,7 +687,7 @@ namespace EmotivUnityPlugin
         {
             JObject param = new JObject(
                     new JProperty("clientId", Config.AppClientId),
-                    new JProperty("clientSecret", Config.AppClientSecret),
+                    new JProperty("clientSecret", Config.GetClientSecret()),
                     new JProperty("username", username),
                     new JProperty("password", password)
                 );
@@ -714,7 +714,7 @@ namespace EmotivUnityPlugin
         {
             JObject param = new JObject(
                     new JProperty("clientId", Config.AppClientId),
-                    new JProperty("clientSecret", Config.AppClientSecret),
+                    new JProperty("clientSecret", Config.GetClientSecret()),
                     new JProperty("cortexToken", currentAccessToken)
                 );
             SendTextMessage(param, "generateNewToken", true);

@@ -1,0 +1,65 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Orchestrator", "Orchestrator", "{386CF7F1-2C50-82F4-91F9-FCF6211B624B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "BCIOrchestratorComplete", "BCIOrchestratorComplete", "{CD4CE0D0-0A88-288E-E733-8134FF02967E}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "BCIOrchestrator_Integrated", "BCIOrchestrator_Integrated", "{72F8115A-F1FD-2C1F-42DD-2D9AE74A106F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BCIOrchestrator", "Orchestrator\BCIOrchestratorComplete\BCIOrchestrator_Integrated\BCIOrchestrator.csproj", "{45D33903-FDCC-B624-8F04-DB6605D43911}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Wrapper", "Wrapper", "{452C533C-B638-A269-E8C1-3A954B5C9908}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BrainWrapper", "Wrapper\BrainWrapper.csproj", "{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Debug|x64.Build.0 = Debug|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Debug|x86.Build.0 = Debug|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Release|Any CPU.Build.0 = Release|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Release|x64.ActiveCfg = Release|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Release|x64.Build.0 = Release|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Release|x86.ActiveCfg = Release|Any CPU
+		{45D33903-FDCC-B624-8F04-DB6605D43911}.Release|x86.Build.0 = Release|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Debug|x64.Build.0 = Debug|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Debug|x86.Build.0 = Debug|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Release|x64.ActiveCfg = Release|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Release|x64.Build.0 = Release|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Release|x86.ActiveCfg = Release|Any CPU
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{CD4CE0D0-0A88-288E-E733-8134FF02967E} = {386CF7F1-2C50-82F4-91F9-FCF6211B624B}
+		{72F8115A-F1FD-2C1F-42DD-2D9AE74A106F} = {CD4CE0D0-0A88-288E-E733-8134FF02967E}
+		{45D33903-FDCC-B624-8F04-DB6605D43911} = {72F8115A-F1FD-2C1F-42DD-2D9AE74A106F}
+		{BDD3739D-579C-445E-9373-AF3AB1FEF5F1} = {452C533C-B638-A269-E8C1-3A954B5C9908}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {4B08796A-7FBF-4361-BBF1-E7F52E7C5EAA}
+	EndGlobalSection
+EndGlobal

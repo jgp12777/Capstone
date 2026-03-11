@@ -7,8 +7,10 @@ namespace EmotivUnityPlugin
     /// </summary>
     public static class Config
     {
-        public static string AppClientId            = "";
-        public static string AppClientSecret        = "";
+        public static string AppClientId { get; private set; } = "";
+        private static string _appClientSecret = "";
+        // Expose client secret only to internal consumers, not as a public field
+        internal static string GetClientSecret() => _appClientSecret;
         public static string AppUrl = "";
         public static string AppName = "";
         public static string ProviderName = "";
@@ -41,7 +43,7 @@ namespace EmotivUnityPlugin
         )
         {
             AppClientId = clientId;
-            AppClientSecret = clientSecret;
+            _appClientSecret = clientSecret;
             AppName = appName;
             AppUrl = appUrl;
             ProviderName = providerName;

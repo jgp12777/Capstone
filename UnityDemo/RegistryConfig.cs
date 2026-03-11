@@ -12,6 +12,13 @@ namespace EmotivUnityPlugin
     {
         public RegistryConfig(string uriScheme)
         {
+            if (string.IsNullOrEmpty(uriScheme) ||
+                uriScheme.Contains('\\') ||
+                uriScheme.Contains('/') ||
+                uriScheme.Contains('\0'))
+            {
+                throw new ArgumentException("Invalid URI scheme for registry configuration.", nameof(uriScheme));
+            }
             CustomUriScheme = uriScheme;
         }
 

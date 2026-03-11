@@ -1,0 +1,13 @@
+# Secret — never commit the broadcast token
+**/Properties/launchSettings.json
+
+Wrapper/obj/BrainWrapper.csproj.nuget.dgspec.json
+Wrapper/obj/BrainWrapper.csproj.nuget.g.props
+Wrapper/obj/BrainWrapper.csproj.nuget.g.targets
+Wrapper/obj/project.assets.json
+Wrapper/obj/project.nuget.cache
+Wrapper/obj/Debug/net8.0-windows/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs
+Wrapper/obj/Debug/net8.0-windows/BrainWrapper.AssemblyInfo.cs
+Wrapper/obj/Debug/net8.0-windows/BrainWrapper.AssemblyInfoInputs.cache
+Wrapper/obj/Debug/net8.0-windows/BrainWrapper.assets.cache
+Wrapper/obj/Debug/net8.0-windows/BrainWrapper.GeneratedMSBuildEditorConfig.editorconfig
