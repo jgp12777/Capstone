@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections;
 using Newtonsoft.Json.Linq;
 using System.Runtime.Serialization;
+using System.Text.Json.Serialization;
 
 namespace EmotivUnityPlugin
 {
@@ -373,6 +374,7 @@ namespace EmotivUnityPlugin
     [Serializable()]
     public class UserDataInfo : ISerializable
     {
+        [JsonConstructor]
         public UserDataInfo(double time = 0, string token = "", string emotivId = "") {
             LastLoginTime   = time;
             CortexToken     = token;

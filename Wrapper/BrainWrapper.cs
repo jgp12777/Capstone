@@ -1,673 +1,806 @@
-//==============================================================================
-// BRAIN WRAPPER v2.0
-// UDP → Filtered → WebSocket + Console + Keyboard
-// Improved with extensive debugging and robust error handling
-//==============================================================================
 
 using System;
-using System.Collections.Generic;
+using System.Net.Sockets; 
+using System.Text; 
 using System.Globalization;
-using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Net.WebSockets;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Linq;
 
-//=============================================================================
-// CONFIGURATION
-//=============================================================================
-
-var config = new WrapperConfig();
-
-// Parse command line arguments
-for (int i = 0; i < args.Length; i++)
-{
-    switch (args[i].ToLower())
-    {
-        case "--keys":
-            config.KeyboardMode = true;
-            break;
-        case "--no-keys":
-            config.KeyboardMode = false;
-            break;
-        case "--debug":
-            config.LogLevel = "DEBUG";
-            break;
-        case "--port":
-            if (i + 1 < args.Length && int.TryParse(args[++i], out int port))
-                config.HttpPort = port;
-            break;
-        case "--udp-port":
-            if (i + 1 < args.Length && int.TryParse(args[++i], out int udpPort))
-                config.UdpPort = udpPort;
-            break;
-        case "--on-threshold":
-            if (i + 1 < args.Length && double.TryParse(args[++i], out double onTh))
-                config.OnThreshold = onTh;
-            break;
-        case "--off-threshold":
-            if (i + 1 < args.Length && double.TryParse(args[++i], out double offTh))
-                config.OffThreshold = offTh;
-            break;
-        case "--debounce":
-            if (i + 1 < args.Length && int.TryParse(args[++i], out int debounce))
-                config.DebounceMs = debounce;
-            break;
-        case "--rate":
-            if (i + 1 < args.Length && int.TryParse(args[++i], out int rate))
-                config.RateHz = rate;
-            break;
-        case "--help":
-            PrintHelp();
-            return;
-    }
-}
-
-//=============================================================================
-// LOGGER
-//=============================================================================
-
-var logger = new Logger(config.LogLevel);
-
-//=============================================================================
-// STATE VARIABLES
-//=============================================================================
-
-string activeAction = "neutral";
-string candidateAction = "neutral";
-DateTime candidateSince = DateTime.UtcNow;
-double lastConfidence = 0.0;
-DateTime activeSince = DateTime.UtcNow;
-string lastSource = "none";
-ushort currentKeyDown = 0;
-
-// Rate limiting
-int intervalMs = Math.Max(1, 1000 / config.RateHz);
-DateTime lastBroadcast = DateTime.MinValue;
-string lastBroadcastJson = "";
-
-// WebSocket clients
-var clients = new List<WebSocket>();
-var clientsLock = new object();
-
-// Metrics
-long packetsReceived = 0;
-long packetsProcessed = 0;
-long stateChanges = 0;
-DateTime startTime = DateTime.UtcNow;
-
-// Cancellation
+// Graceful shutdown handler
 var cts = new CancellationTokenSource();
-
-//=============================================================================
-// STARTUP BANNER
-//=============================================================================
-
-logger.Info("STARTUP", "═══════════════════════════════════════════════════════");
-logger.Info("STARTUP", "  BRAIN WRAPPER v2.0");
-logger.Info("STARTUP", "  UDP → Filtered → WebSocket + Console");
-logger.Info("STARTUP", "═══════════════════════════════════════════════════════");
-logger.Info("STARTUP", $"UDP Input:        :{config.UdpPort}");
-logger.Info("STARTUP", $"WebSocket:        ws://127.0.0.1:{config.HttpPort}/stream");
-logger.Info("STARTUP", $"HTTP:             http://127.0.0.1:{config.HttpPort}/state");
-logger.Info("STARTUP", $"On Threshold:     {config.OnThreshold}");
-logger.Info("STARTUP", $"Off Threshold:    {config.OffThreshold}");
-logger.Info("STARTUP", $"Debounce:         {config.DebounceMs}ms");
-logger.Info("STARTUP", $"Rate Limit:       {config.RateHz}Hz");
-logger.Info("STARTUP", $"Keyboard Mode:    {(config.KeyboardMode ? "ON (--keys)" : "OFF")}");
-logger.Info("STARTUP", $"Log Level:        {config.LogLevel}");
-logger.Info("STARTUP", "───────────────────────────────────────────────────────");
-
-//=============================================================================
-// GRACEFUL SHUTDOWN
-//=============================================================================
-
-Console.CancelKeyPress += (s, e) =>
+Console.CancelKeyPress += (sender, e) =>
 {
-    e.Cancel = true;
-    logger.Info("SHUTDOWN", "Received CTRL+C, shutting down...");
+    e.Cancel = true; // Prevent immediate termination
+    Console.WriteLine("\nShutdown requested...");
     cts.Cancel();
 };
 
-//=============================================================================
-// START HTTP/WEBSOCKET SERVER
-//=============================================================================
+//---------------------------------------------------------------------------------
+//------------------------simple settings------------------------------------------
+//---------------------------------------------------------------------------------
 
-var serverTask = Task.Run(async () => await StartHttpWebSocketServerAsync(cts.Token));
+double onThreshold  = 0.6; // turns an action ON
+double offThreshold = 0.5; // turns action OFF (hysteresis)
+int DebounceMs = 150;         // require actions to stay stable this long
+int rateHz = 15;        // cap frequency 
+int udpPort = 7400;
+int httpPort = 8080;   // used by the WebSocket server (ws://127.0.0.1:8080/stream)
 
-//=============================================================================
-// UDP RECEIVER
-//=============================================================================
+// Security limits
+const int MaxWebSocketClients = 100;  // Prevent memory exhaustion
+const int MaxPacketsPerSecond = 1000; // UDP flood protection
+const int MaxPacketSize = 2048;       // Maximum UDP packet size
+const int MaxCsvLength = 256;         // Maximum CSV string length
+const int MaxActionNameLength = 50;   // Maximum action name length
 
-using var udp = new UdpClient(config.UdpPort);
-logger.Info("UDP", $"Listening on port {config.UdpPort}");
+bool keyboardMode = false;  // default: OFF for safety
+bool verboseLogging = false;
 
-try
+// Parse CLI flags: --keys to enable, --no-keys to force disable, --verbose for detailed logging
+// --udp-port PORT, --http-port PORT to override default ports
+for (int i = 0; i < args.Length; i++)
 {
-    while (!cts.Token.IsCancellationRequested)
+    var arg = args[i];
+    if (arg.Equals("--keys", StringComparison.OrdinalIgnoreCase))
+        keyboardMode = true;
+    else if (arg.Equals("--no-keys", StringComparison.OrdinalIgnoreCase))
+        keyboardMode = false;
+    else if (arg.Equals("--verbose", StringComparison.OrdinalIgnoreCase) ||
+             arg.Equals("--debug", StringComparison.OrdinalIgnoreCase))
+        verboseLogging = true;
+    else if (arg.Equals("--udp-port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
     {
-        try
+        if (int.TryParse(args[++i], out int p)) udpPort = p;
+    }
+    else if (arg.Equals("--http-port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+    {
+        if (int.TryParse(args[++i], out int p)) httpPort = p;
+    }
+}
+
+
+
+//---------------------------------------------------------------------------------
+//-----------------------Status Variables------------------------------------------
+//---------------------------------------------------------------------------------
+
+string active = "neutral";  // confirmed clean action
+string candidate = "neutral"; //potential new action 
+DateTime candidateSince = DateTime.UtcNow; //when we start considering the action
+double lastConfidence = 0.0;     // last seen confidence
+DateTime activeSince = DateTime.UtcNow; // When current action became active
+string lastSource = "csv"; // "osc" when we parse OSC successfully
+ushort currentKeyDown = 0;  // which virtual key is currently held (0 = none)
+
+
+
+//rate limits
+int intervalMs = Math.Max(1,(int)Math.Round(1000.0 / rateHz));
+DateTime lastPrintAt    =DateTime.MinValue;
+string lastPrintedLine = "";
+string lastJson = "";        // drop duplicates
+
+// UDP rate limiting
+DateTime lastRateLimitReset = DateTime.UtcNow;
+int packetsThisSecond = 0;
+
+//webSocket Clients
+var clients = new System.Collections.Generic.List<WebSocket>();
+object clientslock = new();
+
+// Protects active, lastConfidence, activeSince, lastSource which are written by the
+// main loop and read by the HTTP handler task running on a separate thread pool thread.
+object _stateLock = new();
+
+
+
+Console.WriteLine("------------------------------------------------");
+Console.WriteLine("BrainWrapper (UDP → filtered → WebSocket + console)");
+Console.WriteLine($"UDP in:           :{udpPort}");
+Console.WriteLine($"WebSocket out:    ws://127.0.0.1:{httpPort}/stream");
+Console.WriteLine($"HTTP:            http://127.0.0.1:{httpPort}/state , /healthz , /command  (also http://localhost:{httpPort}/)");
+Console.WriteLine("Send:             action,confidence   e.g.  push,0.82");
+Console.WriteLine($"Debounce:         {DebounceMs} ms");
+Console.WriteLine($"Rate limit:       {rateHz} Hz");
+Console.WriteLine($"Keyboard mode:    {(keyboardMode ? "ON  (--keys)" : "OFF (default, use --keys)")}");
+Console.WriteLine($"Verbose logging:  {(verboseLogging ? "ON  (--verbose)" : "OFF")}");
+Console.WriteLine($"Max WS clients:   {MaxWebSocketClients}");
+Console.WriteLine($"Max UDP pkt/sec:  {MaxPacketsPerSecond}");
+Console.WriteLine("Flags:            --udp-port PORT  --http-port PORT  --keys  --verbose (--debug alias)");
+Console.WriteLine("------------------------------------------------");
+
+
+//---------------------------------------------------------------------------------
+//----------------------------------Start websocket server-------------------------
+//---------------------------------------------------------------------------------
+StartHttpAndWebSocketServer();
+
+using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, udpPort));
+
+
+
+
+
+
+
+//---------------------------------MAIN loop------------------------------------------------------------------------
+while (!cts.Token.IsCancellationRequested)
+{
+    try
+    {
+        if (udp.Available > 0)
         {
-            if (udp.Available > 0)
+            // Rate limit: prevent UDP flood
+            var now = DateTime.UtcNow;
+            if ((now - lastRateLimitReset).TotalSeconds >= 1.0)
             {
-                var result = await udp.ReceiveAsync(cts.Token);
-                await ProcessPacketAsync(result.Buffer);
+                packetsThisSecond = 0;
+                lastRateLimitReset = now;
+            }
+            
+            packetsThisSecond++;
+            if (packetsThisSecond > MaxPacketsPerSecond)
+            {
+                Console.WriteLine($"Warning: UDP rate limit exceeded ({MaxPacketsPerSecond}/sec)");
+                await Task.Delay(10); // Back off
+                continue;
+            }
+
+
+            var res = await udp.ReceiveAsync(); //1 UDP packet
+            if (res.Buffer.Length == 0 || res.Buffer.Length > MaxPacketSize)
+            {
+                LogVerbose($"Rejected packet: size={res.Buffer.Length} (max={MaxPacketSize})");
+                continue;
+            }
+
+            string action;
+            double conf;
+
+            // 1) Try OSC (binary datagram → address + typetags + args)
+            if (TryParseOsc(res.Buffer, out action, out conf))
+            {
+                lock (_stateLock) { lastSource = "osc"; lastConfidence = conf; }
             }
             else
             {
-                await Task.Delay(1, cts.Token);
+                // 2) Fallback to CSV: "action,confidence"
+                string text;
+                try
+                {
+                    text = Encoding.UTF8.GetString(res.Buffer).Trim();
+                }
+                catch (Exception)
+                {
+                    LogVerbose("Rejected packet: invalid UTF-8 encoding");
+                    continue; // Invalid UTF-8 encoding
+                }
+                
+                // Reject excessively long strings
+                if (text.Length > MaxCsvLength)
+                {
+                    Console.WriteLine($"Warning: Rejected oversized CSV packet (length={text.Length})");
+                    continue;
+                }
+                
+                var parts = text.Split(',');
+                if (parts.Length != 2) continue;
+
+                action = parts[0].Trim().ToLowerInvariant();
+                
+                // Validate action name (only alphanumeric, underscore, and hyphen)
+                if (string.IsNullOrEmpty(action) || action.Length > MaxActionNameLength || !IsValidActionName(action))
+                {
+                    Console.WriteLine($"Warning: Rejected invalid action name: {action}");
+                    continue;
+                }
+                
+                if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out conf))
+                    continue;
+                    
+                // Validate confidence range
+                if (conf < 0.0 || conf > 1.0 || double.IsNaN(conf) || double.IsInfinity(conf))
+                {
+                    Console.WriteLine($"Warning: Rejected invalid confidence value: {conf}");
+                    continue;
+                }
+
+                lock (_stateLock) { lastSource = "csv"; lastConfidence = conf; }
+            }
+
+            //----------------------------filters----------------------------------------------------------------------------
+
+
+            string desired = active; //start from current state
+                                     // tiny cleaning rules:
+            if (conf >= onThreshold && action != "neutral") // strong singal switch to that action
+            {
+                desired = action;     // switch to action
+            }
+            else if (conf < offThreshold) // Weak signal switch to neutral
+            {
+                desired = "neutral"; // fall back to neutral
+            }
+
+
+            //apply Debounce
+            now = DateTime.UtcNow;
+
+            if (desired != candidate)
+            {
+                // new candidate action; timer resets
+                candidate = desired;
+                candidateSince = now;
+            }
+            else
+            {
+                // candidate stayed the same; check dwell time
+                var dwellMs = (now - candidateSince).TotalMilliseconds;
+                if (dwellMs >= DebounceMs && active != candidate)
+                {
+                    string newActive;
+                    lock (_stateLock)
+                    {
+                        active = candidate;   // passed debounce time makes it official
+                        activeSince = now;    // reset duration timer
+                        newActive = active;
+                    }
+                    UpdateKeyboard(newActive); // key sync keyboard with new action
+                }
+
             }
         }
-        catch (OperationCanceledException)
-        {
-            break;
-        }
-        catch (Exception ex)
-        {
-            logger.Error("UDP", $"Receive error: {ex.Message}", ex);
-        }
-    }
-}
-finally
-{
-    udp.Close();
-    logger.Info("UDP", "Receiver stopped");
-}
-
-// Wait for server to stop
-await serverTask;
-logger.Info("SHUTDOWN", "Wrapper stopped");
-
-//=============================================================================
-// PACKET PROCESSING
-//=============================================================================
-
-async Task ProcessPacketAsync(byte[] buffer)
-{
-    packetsReceived++;
     
-    string action;
-    double confidence;
 
-    // Try OSC parsing first
-    if (TryParseOsc(buffer, out action, out confidence))
     {
-        lastSource = "osc";
-        logger.Debug("UDP", $"Parsed OSC: action={action}, conf={confidence:F2}");
-    }
-    // Fall back to CSV
-    else if (TryParseCsv(buffer, out action, out confidence))
-    {
-        lastSource = "csv";
-        logger.Debug("UDP", $"Parsed CSV: action={action}, conf={confidence:F2}");
-    }
-    else
-    {
-        logger.Debug("UDP", $"Failed to parse: {Encoding.UTF8.GetString(buffer)}");
-        return;
-    }
-
-    lastConfidence = confidence;
-    packetsProcessed++;
-
-    await ApplyFiltersAndBroadcastAsync(action, confidence);
-}
-
-bool TryParseOsc(byte[] buffer, out string action, out double confidence)
-{
-    action = "";
-    confidence = 0;
-
-    try
-    {
-        if (buffer.Length < 8 || buffer[0] != '/') return false;
-
-        int addressEnd = Array.IndexOf(buffer, (byte)0);
-        if (addressEnd < 0) return false;
-
-        string address = Encoding.ASCII.GetString(buffer, 0, addressEnd);
-        logger.Debug("OSC", $"Address: {address}");
-
-        string[] parts = address.Split('/');
-        if (parts.Length >= 2)
+        var now = DateTime.UtcNow;
+        if ((now - lastPrintAt).TotalMilliseconds >= intervalMs)
         {
-            action = parts[^1].ToLowerInvariant();
+            lastPrintAt = now;
+
+            // Snapshot shared state once under lock to avoid torn reads with HTTP handler
+            string snapActive, snapSource;
+            double snapConf;
+            DateTime snapSince;
+            lock (_stateLock)
+            {
+                snapActive = active;
+                snapConf   = lastConfidence;
+                snapSince  = activeSince;
+                snapSource = lastSource;
+            }
+
+            // Build status line for console
+            string line = $"active={snapActive}  (candidate={candidate}, conf={snapConf:0.00})";
+
+            // Build JSON event for WebSocket clients
+            int durationMs = (int)Math.Max(0, (now - snapSince).TotalMilliseconds);
+            string json = BuildJson(snapActive, snapConf, durationMs, snapSource);
+
+            // Console: only print if it changed
+            if (line != lastPrintedLine)
+            {
+                Console.WriteLine(line);
+                lastPrintedLine = line;
+            }
+
+            // WebSocket: only broadcast if it changed
+            if (json != lastJson)
+            {
+                await BroadcastAsync(json);
+                lastJson = json;
+            }
         }
+    }
 
-        int typeTagStart = ((addressEnd + 4) / 4) * 4;
-        int dataStart = typeTagStart;
-        while (dataStart < buffer.Length && buffer[dataStart] != 0)
-            dataStart++;
-        dataStart = ((dataStart + 4) / 4) * 4;
-
-        if (dataStart + 4 <= buffer.Length)
-        {
-            byte[] floatBytes = new byte[4];
-            Array.Copy(buffer, dataStart, floatBytes, 0, 4);
-            if (BitConverter.IsLittleEndian)
-                Array.Reverse(floatBytes);
-            confidence = BitConverter.ToSingle(floatBytes, 0);
-        }
-
-        return !string.IsNullOrEmpty(action);
+    await Task.Delay(5);
     }
     catch (Exception ex)
     {
-        logger.Debug("OSC", $"Parse error: {ex.Message}");
-        return false;
+        Console.WriteLine($"Warning: {ex.Message}");
+    }
+
+}
+
+// Cleanup on shutdown
+Console.WriteLine("Releasing any held keys...");
+if (keyboardMode && currentKeyDown != 0)
+{
+    SendKey(currentKeyDown, KeyEventFlags.KEYUP);
+}
+
+Console.WriteLine("Closing WebSocket connections...");
+lock (clientslock)
+{
+    foreach (var ws in clients)
+    {
+        try
+        {
+            if (ws.State == WebSocketState.Open)
+                ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server shutdown", CancellationToken.None).Wait(1000);
+            ws.Dispose();
+        }
+        catch { }
+    }
+    clients.Clear();
+}
+
+Console.WriteLine("Shutdown complete.");
+
+//-----------------------------------------------------------------------
+// HELPER: BUILD JSON STRING
+//-----------------------------------------------------------------------
+string BuildJson(string action, double conf, int durationMs, string source)
+{
+    // Manual JSON construction to avoid reflection issues in .NET 8+
+    try
+    {
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return $"{{\"ts\":{ts},\"type\":\"mental_command\",\"action\":\"{action}\",\"confidence\":{conf:F2},\"durationMs\":{durationMs},\"source\":\"{source}\",\"raw\":{{\"source\":\"{source}\"}}}}";
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"JSON build error: {ex.Message}");
+        return "{\"error\":\"serialization_failed\"}";
     }
 }
 
-bool TryParseCsv(byte[] buffer, out string action, out double confidence)
+
+
+//-----------------------------------------------------------------------
+// HELPER: Broadcast a JSON message to all WebSocket clients
+//-----------------------------------------------------------------------
+async Task BroadcastAsync(string json)
 {
-    action = "";
-    confidence = 0;
+    List<WebSocket> deadClients = new();
+    
+    lock (clientslock)
+    {
+        if (clients.Count == 0) return;
+        
+        // Remove dead connections proactively
+        clients.RemoveAll(ws => ws.State != WebSocketState.Open && ws.State != WebSocketState.Connecting);
+    }
+
+    byte[] msg = Encoding.UTF8.GetBytes(json);
+    var tasks = new List<Task>();
+
+    lock (clientslock)
+    {
+        foreach (var ws in clients)
+        {
+            if (ws.State == WebSocketState.Open)
+            {
+                tasks.Add(SendWithTimeout(ws, msg));
+            }
+            else if (ws.State == WebSocketState.Closed || ws.State == WebSocketState.Aborted)
+            {
+                deadClients.Add(ws);
+            }
+        }
+    }
+
+    // Clean up dead clients
+    if (deadClients.Count > 0)
+    {
+        lock (clientslock)
+        {
+            foreach (var ws in deadClients)
+                clients.Remove(ws);
+        }
+    }
 
     try
     {
-        string text = Encoding.UTF8.GetString(buffer).Trim();
-        var parts = text.Split(',');
-        if (parts.Length != 2) return false;
+        await Task.WhenAll(tasks);
+    }
+    catch (Exception ex)
+    {
+        LogVerbose($"Broadcast error: {ex.Message}");
+    }
+}
 
-        action = parts[0].Trim().ToLowerInvariant();
-        return double.TryParse(parts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out confidence);
+async Task SendWithTimeout(WebSocket ws, byte[] msg)
+{
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    try
+    {
+        await ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, cts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        LogVerbose("WebSocket send timeout - client may be unresponsive");
+    }
+    catch (Exception ex)
+    {
+        LogVerbose($"WebSocket send failed: {ex.Message}");
+    }
+}
+
+void LogVerbose(string message)
+{
+    if (verboseLogging)
+        Console.WriteLine($"[VERBOSE] {message}");
+}
+
+static bool IsValidActionName(string name)
+{
+    return name.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '-');
+}
+
+//-----------------------------------------------------------------------
+// OSC PARSER
+// Minimal Open Sound Control decoder that can extract:
+//   /address ,typetags arg1 arg2 ...
+// We only care about a single float argument (e.g. for confidence).
+//-----------------------------------------------------------------------
+static bool TryParseOsc(byte[] data, out string action, out double conf)
+{
+    action = string.Empty;
+    conf = 0.0;
+
+    if (data == null || data.Length < 8 || data.Length > 2048)
+        return false;
+
+    try
+    {
+        int idx = 0;
+
+        // 1) Address (null-terminated C string, 4-byte aligned)
+        int addrStart = idx;
+        int maxAddrLen = Math.Min(data.Length, 256); // Prevent runaway string parsing
+        
+        while (idx < maxAddrLen && data[idx] != 0) idx++;
+        if (idx >= data.Length || idx >= maxAddrLen) return false;
+
+        string address = Encoding.ASCII.GetString(data, addrStart, idx - addrStart);
+        idx++; // skip null
+        Align4(ref idx);
+        
+        if (idx >= data.Length) return false;
+
+        // 2) Type-tag string: e.g. ",f" (comma + 'f' for float, then null, then 4-byte align)
+        int typeStart = idx;
+        while (idx < data.Length && data[idx] != 0) idx++;
+        if (idx >= data.Length) return false;
+
+        string typeTags = Encoding.ASCII.GetString(data, typeStart, idx - typeStart);
+        idx++; // skip null
+        Align4(ref idx);
+        if (idx >= data.Length) return false;
+
+        // We expect ",f" or ",ff" or similar. At least one 'f'.
+        if (!typeTags.Contains('f')) return false;
+
+        // 3) Read first float arg
+        if (idx + 4 > data.Length) return false;
+        float val = ReadFloat32BigEndian(data, idx);
+        idx += 4;
+
+        // 4) Parse address for the action name
+        //    e.g. "/mentalCommand/push" or "/push"
+        var parts = address.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return false;
+
+        // For multi-level paths, pick last segment
+        // e.g. "/mentalCommand/push" -> "push"
+        action = parts[parts.Length - 1].ToLowerInvariant();
+
+        // Convert float to double for conf
+        conf = (double)val;
+
+        // Some sanity checks
+        if (double.IsNaN(conf) || double.IsInfinity(conf) || conf < 0.0 || conf > 1.0)
+            return false;
+
+        return true;
     }
     catch
     {
         return false;
     }
-}
 
-//=============================================================================
-// FILTER & BROADCAST
-//=============================================================================
+    // Reads 4 bytes as big-endian float
+    static float ReadFloat32BigEndian(byte[] data, int idx)
+    {
+        byte b0 = data[idx];
+        byte b1 = data[idx + 1];
+        byte b2 = data[idx + 2];
+        byte b3 = data[idx + 3];
 
-async Task ApplyFiltersAndBroadcastAsync(string action, double confidence)
-{
-    string previousActive = activeAction;
-
-    // Determine desired state (hysteresis)
-    string desired = activeAction;
-    if (confidence >= config.OnThreshold && action != "neutral")
-    {
-        desired = action;
-    }
-    else if (confidence < config.OffThreshold)
-    {
-        desired = "neutral";
-    }
-    else if (activeAction != "neutral" && action == activeAction)
-    {
-        desired = activeAction;
+        if (BitConverter.IsLittleEndian)
+            return BitConverter.ToSingle(new byte[] { b3, b2, b1, b0 }, 0);
+        return BitConverter.ToSingle(new byte[] { b0, b1, b2, b3 }, 0);
     }
 
-    // Debounce logic
-    if (desired != candidateAction)
+    static void Align4(ref int idx)
     {
-        candidateAction = desired;
-        candidateSince = DateTime.UtcNow;
-        logger.Debug("FILTER", $"New candidate: {candidateAction} (conf={confidence:F2})");
-    }
-    else if ((DateTime.UtcNow - candidateSince).TotalMilliseconds >= config.DebounceMs)
-    {
-        if (candidateAction != activeAction)
-        {
-            string prev = activeAction;
-            activeAction = candidateAction;
-            activeSince = DateTime.UtcNow;
-            stateChanges++;
-
-            logger.Info("STATE", $"CHANGE: {prev} → {activeAction} (conf={confidence:F2})");
-
-            // Update keyboard
-            UpdateKeyboard(activeAction);
-        }
-    }
-
-    // Rate limiting
-    if ((DateTime.UtcNow - lastBroadcast).TotalMilliseconds < intervalMs)
-        return;
-
-    // Build and broadcast
-    if (activeAction != previousActive || (DateTime.UtcNow - lastBroadcast).TotalSeconds > 1)
-    {
-        var brainEvent = new BrainEvent
-        {
-            Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            Type = "mental_command",
-            Action = activeAction,
-            Confidence = confidence,
-            DurationMs = (int)(DateTime.UtcNow - activeSince).TotalMilliseconds,
-            Source = lastSource
-        };
-
-        string json = JsonSerializer.Serialize(brainEvent);
-
-        if (json != lastBroadcastJson)
-        {
-            lastBroadcastJson = json;
-            lastBroadcast = DateTime.UtcNow;
-            await BroadcastAsync(json);
-        }
+        int mod = idx % 4;
+        if (mod != 0) idx += (4 - mod);
     }
 }
 
-//=============================================================================
-// HTTP/WEBSOCKET SERVER
-//=============================================================================
 
-async Task StartHttpWebSocketServerAsync(CancellationToken ct)
+//---------------------------------------------------------------------------------------------------------------------
+//-------------------------------START WEB SERVER ON ws://127.0.0.1.:8080/stream
+//---------------------------------------------------------------------------------------------------------------------
+
+// Starts a localhost HttpListener that serves:
+// - WebSocket on /stream
+// - HTTP JSON on /state
+// - HTTP health on /healthz
+void StartHttpAndWebSocketServer()
 {
-    var listener = new HttpListener();
-    
-    try
+    Task.Run(async () =>
     {
-        listener.Prefixes.Add($"http://127.0.0.1:{config.HttpPort}/");
-        listener.Start();
-        logger.Info("HTTP", $"Server listening on http://127.0.0.1:{config.HttpPort}/");
-    }
-    catch (HttpListenerException ex)
-    {
-        logger.Error("HTTP", $"Failed to start: {ex.Message}", ex);
-        logger.Warn("HTTP", "Try running as Administrator or reserving the URL");
-        return;
-    }
-
-    while (!ct.IsCancellationRequested)
-    {
+        var listener = new HttpListener();
+        // localhost-only for safety; bind both forms so BoxController's "localhost" resolves correctly
+        // on Windows with IPv6, "localhost" may resolve to ::1 instead of 127.0.0.1
+        listener.Prefixes.Add($"http://127.0.0.1:{httpPort}/");
+        listener.Prefixes.Add($"http://localhost:{httpPort}/");
         try
         {
-            var context = await listener.GetContextAsync();
-            _ = Task.Run(() => HandleRequestAsync(context, ct), ct);
+            listener.Start();
         }
-        catch (HttpListenerException) when (ct.IsCancellationRequested)
+        catch (HttpListenerException ex)
         {
-            break;
-        }
-        catch (Exception ex)
-        {
-            logger.Error("HTTP", $"Accept error: {ex.Message}", ex);
-        }
-    }
-
-    listener.Stop();
-    logger.Info("HTTP", "Server stopped");
-}
-
-async Task HandleRequestAsync(HttpListenerContext ctx, CancellationToken ct)
-{
-    string path = ctx.Request.RawUrl ?? "/";
-    string method = ctx.Request.HttpMethod;
-    
-    logger.Debug("HTTP", $"{method} {path}");
-
-    try
-    {
-        // WebSocket: /stream
-        if (ctx.Request.IsWebSocketRequest && path == "/stream")
-        {
-            await HandleWebSocketAsync(ctx, ct);
+            Console.WriteLine("Error: could not start HTTP/WS server.");
+            Console.WriteLine("You may need to run as Administrator or reserve the URL.");
+            Console.WriteLine(ex.Message);
             return;
         }
 
-        // HTTP: /state
-        if (method == "GET" && path == "/state")
+        Console.WriteLine($"HTTP/WS listening on http://127.0.0.1:{httpPort}/  (WS: /stream, HTTP: /state, /healthz, /command)");
+
+        while (!cts.Token.IsCancellationRequested)
         {
-            var state = new StateSnapshot
+            HttpListenerContext ctx;
+            try { ctx = await listener.GetContextAsync(); }
+            catch { break; } // listener stopped
+
+            // Validate request is from localhost only
+            if (!ctx.Request.IsLocal)
             {
-                Active = activeAction,
-                Confidence = lastConfidence,
-                DurationMs = (int)(DateTime.UtcNow - activeSince).TotalMilliseconds,
-                Source = lastSource,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-            await SendJsonAsync(ctx, state);
-            return;
-        }
+                Console.WriteLine($"Warning: Rejected non-local request from {ctx.Request.RemoteEndPoint}");
+                ctx.Response.StatusCode = 403;
+                ctx.Response.Close();
+                continue;
+            }
 
-        // HTTP: /healthz
-        if (method == "GET" && path == "/healthz")
-        {
-            await SendJsonAsync(ctx, new { status = "ok", timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
-            return;
-        }
-
-        // HTTP: /metrics
-        if (method == "GET" && path == "/metrics")
-        {
-            var metrics = new
+            // Validate URL path to prevent path traversal
+            if (ctx.Request.RawUrl.Contains("..") || ctx.Request.RawUrl.Contains("%2e"))
             {
-                packetsReceived,
-                packetsProcessed,
-                stateChanges,
-                connectedClients = clients.Count(c => c.State == WebSocketState.Open),
-                uptimeMs = (long)(DateTime.UtcNow - startTime).TotalMilliseconds
-            };
-            await SendJsonAsync(ctx, metrics);
-            return;
-        }
+                Console.WriteLine($"Warning: Rejected suspicious URL: {ctx.Request.RawUrl}");
+                ctx.Response.StatusCode = 400;
+                ctx.Response.Close();
+                continue;
+            }
 
-        // Default info page
-        string info = $@"Brain Wrapper v2.0
-
-Endpoints:
-  ws://127.0.0.1:{config.HttpPort}/stream  - WebSocket stream
-  GET /state   - Current state
-  GET /healthz - Health check
-  GET /metrics - Metrics
-
-State: {activeAction} (conf={lastConfidence:F2})
-Clients: {clients.Count(c => c.State == WebSocketState.Open)}
-Packets: {packetsReceived}";
-
-        byte[] body = Encoding.UTF8.GetBytes(info);
-        ctx.Response.StatusCode = 200;
-        ctx.Response.ContentType = "text/plain";
-        await ctx.Response.OutputStream.WriteAsync(body);
-        ctx.Response.Close();
-    }
-    catch (Exception ex)
-    {
-        logger.Error("HTTP", $"Request error: {ex.Message}", ex);
-        try { ctx.Response.StatusCode = 500; ctx.Response.Close(); } catch { }
-    }
-}
-
-async Task HandleWebSocketAsync(HttpListenerContext ctx, CancellationToken ct)
-{
-    WebSocketContext? wsContext = null;
-    
-    try
-    {
-        wsContext = await ctx.AcceptWebSocketAsync(subProtocol: null);
-        var ws = wsContext.WebSocket;
-        
-        logger.Info("WS", "Client connected");
-        
-        lock (clientsLock)
-        {
-            clients.Add(ws);
-        }
-
-        // Send initial state
-        var initialState = new StateSnapshot
-        {
-            Active = activeAction,
-            Confidence = lastConfidence,
-            DurationMs = (int)(DateTime.UtcNow - activeSince).TotalMilliseconds,
-            Source = lastSource,
-            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-        };
-        await SendToClientAsync(ws, JsonSerializer.Serialize(initialState));
-
-        // Receive loop
-        var buffer = new byte[1024];
-        while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
-        {
-            try
+            // 1) WebSocket endpoint: /stream
+            if (ctx.Request.IsWebSocketRequest && ctx.Request.RawUrl == "/stream")
             {
-                var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-                if (result.MessageType == WebSocketMessageType.Close)
-                    break;
-                
-                if (result.MessageType == WebSocketMessageType.Text)
+                try
                 {
-                    string msg = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    logger.Debug("WS", $"Received: {msg}");
-                    
-                    if (msg == "ping")
-                        await SendToClientAsync(ws, "pong");
+                    // Enforce maximum client limit
+                    lock (clientslock)
+                    {
+                        if (clients.Count >= MaxWebSocketClients)
+                        {
+                            Console.WriteLine($"WebSocket connection rejected: maximum {MaxWebSocketClients} clients reached");
+                            ctx.Response.StatusCode = 503; // Service Unavailable
+                            ctx.Response.Close();
+                            continue;
+                        }
+                    }
+
+                    var wsContext = await ctx.AcceptWebSocketAsync(subProtocol: null);
+                    var ws = wsContext.WebSocket;
+
+                    lock (clientslock)
+                    {
+                        clients.Add(ws);
+                        Console.WriteLine($"WebSocket client connected ({clients.Count}/{MaxWebSocketClients})");
+                    }
+
+                    // background loop to detect close
+                    _ = Task.Run(async () =>
+                    {
+                        var buffer = new byte[1024];
+                        try
+                        {
+                            while (ws.State == WebSocketState.Open)
+                            {
+                                var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                                if (result.MessageType == WebSocketMessageType.Close) break;
+                            }
+                        }
+                        catch { /* ignore */ }
+                        finally
+                        {
+                            lock (clientslock)
+                            {
+                                clients.Remove(ws);
+                                Console.WriteLine($"WebSocket client disconnected ({clients.Count}/{MaxWebSocketClients})");
+                            }
+                            try { ws.Dispose(); } catch { }
+                        }
+                    });
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"WebSocket accept error: {ex.Message}");
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.Close();
+                }
+                continue;
             }
-            catch (WebSocketException)
+
+            // 2) HTTP: /state -> current JSON snapshot
+            if (ctx.Request.HttpMethod == "GET" && ctx.Request.RawUrl == "/state")
             {
-                break;
-            }
-        }
+                string snapActive, snapSource;
+                double snapConf;
+                DateTime snapSince;
+                lock (_stateLock)
+                {
+                    snapActive = active;
+                    snapConf   = lastConfidence;
+                    snapSince  = activeSince;
+                    snapSource = lastSource;
+                }
+                string json = BuildJson(
+                    snapActive,
+                    snapConf,
+                    (int)Math.Max(0, (DateTime.UtcNow - snapSince).TotalMilliseconds),
+                    snapSource);
 
-        if (ws.State == WebSocketState.Open)
-        {
-            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-        }
-    }
-    catch (Exception ex)
-    {
-        logger.Warn("WS", $"Client error: {ex.Message}", ex);
-    }
-    finally
-    {
-        if (wsContext != null)
-        {
-            lock (clientsLock)
+                byte[] body = Encoding.UTF8.GetBytes(json);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentEncoding = Encoding.UTF8;
+                await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
+                ctx.Response.OutputStream.Close();
+                continue;
+            }
+
+            // 3) HTTP: /healthz -> {"status":"ok"}
+            if (ctx.Request.HttpMethod == "GET" && ctx.Request.RawUrl == "/healthz")
             {
-                clients.Remove(wsContext.WebSocket);
+                const string ok = "{\"status\":\"ok\"}";
+                byte[] body = Encoding.UTF8.GetBytes(ok);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.ContentEncoding = Encoding.UTF8;
+                await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
+                ctx.Response.OutputStream.Close();
+                continue;
             }
-            try { wsContext.WebSocket.Dispose(); } catch { }
-        }
-        logger.Info("WS", $"Client disconnected (remaining: {clients.Count(c => c.State == WebSocketState.Open)})");
-    }
-}
 
-async Task BroadcastAsync(string message)
-{
-    var buffer = Encoding.UTF8.GetBytes(message);
-    var segment = new ArraySegment<byte>(buffer);
-    
-    List<WebSocket> toSend;
-    lock (clientsLock)
-    {
-        toSend = clients.Where(c => c.State == WebSocketState.Open).ToList();
-    }
+            // 4) HTTP: /command -> simple text command for Unity (L/R/U/D or empty for neutral)
+            if (ctx.Request.HttpMethod == "GET" && ctx.Request.RawUrl == "/command")
+            {
+                string snapActive;
+                lock (_stateLock) { snapActive = active; }
+                string cmd = MapActionToCommand(snapActive);
+                byte[] body = Encoding.UTF8.GetBytes(cmd);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "text/plain";
+                ctx.Response.ContentEncoding = Encoding.UTF8;
+                await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
+                ctx.Response.OutputStream.Close();
+                continue;
+            }
 
-    var tasks = toSend.Select(async client =>
-    {
-        try
-        {
-            await client.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
+            // 5) Anything else -> small info text
+            {
+                string info = $"Endpoints: ws /stream , http GET /state , GET /healthz , GET /command";
+                byte[] body = Encoding.UTF8.GetBytes(info);
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "text/plain";
+                await ctx.Response.OutputStream.WriteAsync(body, 0, body.Length);
+                ctx.Response.OutputStream.Close();
+            }
         }
-        catch (Exception ex)
-        {
-            logger.Debug("WS", $"Send failed: {ex.Message}");
-        }
+        
+        listener.Stop();
     });
-
-    await Task.WhenAll(tasks);
-    logger.Debug("WS", $"Broadcasted to {toSend.Count} clients");
 }
 
-async Task SendToClientAsync(WebSocket ws, string message)
-{
-    if (ws.State != WebSocketState.Open) return;
-    var buffer = Encoding.UTF8.GetBytes(message);
-    await ws.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
-}
-
-async Task SendJsonAsync(HttpListenerContext ctx, object data)
-{
-    string json = JsonSerializer.Serialize(data);
-    byte[] body = Encoding.UTF8.GetBytes(json);
-    ctx.Response.StatusCode = 200;
-    ctx.Response.ContentType = "application/json";
-    ctx.Response.ContentEncoding = Encoding.UTF8;
-    await ctx.Response.OutputStream.WriteAsync(body);
-    ctx.Response.Close();
-}
-
-//=============================================================================
-// KEYBOARD EMULATION (Windows only)
-//=============================================================================
+// -----------------------------------------------------------------------
+// KEYBOARD EMULATION 
+// Maps actions to WASD using Win32 SendInput.
+// -----------------------------------------------------------------------
 
 void UpdateKeyboard(string newAction)
 {
-    if (!config.KeyboardMode) return;
-    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+    if (!keyboardMode)
+        return;
 
-    ushort? newKey = newAction.ToLowerInvariant() switch
-    {
-        "push" => 0x57,  // W
-        "pull" => 0x53,  // S
-        "left" => 0x41,  // A
-        "right" => 0x44, // D
-        "lift" => 0x20,  // Space
-        _ => null
-    };
+    // Map action -> virtual key code
+    ushort? newKey = MapActionToKey(newAction);
 
-    // Release old key
+    // If we have an old key held down and it's changing or going neutral -> release old key
     if (currentKeyDown != 0 && (!newKey.HasValue || newKey.Value != currentKeyDown))
     {
-        SendKey(currentKeyDown, false);
-        logger.Debug("KB", $"Released key 0x{currentKeyDown:X2}");
+        SendKey(currentKeyDown, KeyEventFlags.KEYUP);
         currentKeyDown = 0;
     }
 
-    // Press new key
+    // If new key is non-neutral and different -> press new key
     if (newKey.HasValue && newKey.Value != 0 && newKey.Value != currentKeyDown)
     {
-        SendKey(newKey.Value, true);
-        logger.Debug("KB", $"Pressed key 0x{newKey.Value:X2}");
+        SendKey(newKey.Value, KeyEventFlags.KEYDOWN);
         currentKeyDown = newKey.Value;
     }
 }
 
-void SendKey(ushort vk, bool down)
+// Map mental action -> simple direction command for Unity BoxController (L/R/U/D or "")
+static string MapActionToCommand(string action)
 {
-    if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
-
-    var input = new INPUT
+    return action.ToLowerInvariant() switch
     {
-        type = 1, // KEYBOARD
-        u = new InputUnion
-        {
-            ki = new KEYBDINPUT
-            {
-                wVk = vk,
-                dwFlags = down ? 0u : 2u // KEYUP = 2
-            }
-        }
+        "push"  => "U",
+        "pull"  => "D",
+        "left"  => "L",
+        "right" => "R",
+        _       => ""
     };
-
-    SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
 }
 
-[DllImport("user32.dll")]
+// Map mental action -> virtual-key code (WASD)
+ushort? MapActionToKey(string action)
+{
+    switch (action.ToLowerInvariant())
+    {
+        case "push":  return 0x57; // 'W'
+        case "pull":  return 0x53; // 'S'
+        case "left":  return 0x41; // 'A'
+        case "right": return 0x44; // 'D'
+        default:      return null; // neutral or unsupported -> no key
+    }
+}
+
+// Sends a single key press or release using SendInput.
+void SendKey(ushort vk, KeyEventFlags flags)
+{
+    INPUT[] inputs = new INPUT[1];
+    inputs[0].type = 1; // INPUT_KEYBOARD
+    inputs[0].U.ki.wVk = vk;
+    inputs[0].U.ki.wScan = 0;
+    inputs[0].U.ki.dwFlags = (uint)flags;
+    inputs[0].U.ki.time = 0;
+    inputs[0].U.ki.dwExtraInfo = IntPtr.Zero;
+
+    uint result = SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+    if (result == 0)
+    {
+        // optional debug:
+        // Console.WriteLine($"SendInput failed for vk={vk}, flags={flags}, error={Marshal.GetLastWin32Error()}");
+    }
+}
+
+// ---- Win32 interop for SendInput ----
+
+[DllImport("user32.dll", SetLastError = true)]
 static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
 [StructLayout(LayoutKind.Sequential)]
 struct INPUT
 {
     public uint type;
-    public InputUnion u;
+    public InputUnion U;
 }
 
 [StructLayout(LayoutKind.Explicit)]
 struct InputUnion
 {
-    [FieldOffset(0)] public KEYBDINPUT ki;
+    [FieldOffset(0)]
+    public KEYBDINPUT ki;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -680,108 +813,10 @@ struct KEYBDINPUT
     public IntPtr dwExtraInfo;
 }
 
-//=============================================================================
-// HELP
-//=============================================================================
-
-void PrintHelp()
+[Flags]
+enum KeyEventFlags : uint
 {
-    Console.WriteLine(@"
-Brain Wrapper v2.0 - UDP → Filtered → WebSocket + Console
-
-Usage: BrainWrapper [options]
-
-Options:
-  --keys              Enable keyboard emulation (WASD)
-  --no-keys           Disable keyboard emulation (default)
-  --debug             Enable debug logging
-  --port PORT         HTTP/WebSocket port (default: 8080)
-  --udp-port PORT     UDP listener port (default: 7400)
-  --on-threshold N    On threshold (default: 0.6)
-  --off-threshold N   Off threshold (default: 0.5)
-  --debounce MS       Debounce time in ms (default: 150)
-  --rate HZ           Rate limit in Hz (default: 15)
-  --help              Show this help
-
-Input Format:
-  CSV: action,confidence (e.g., push,0.82)
-  OSC: /path/action with float argument
-
-Actions: push, pull, left, right, lift, drop, neutral
-");
-}
-
-//=============================================================================
-// TYPES
-//=============================================================================
-
-class WrapperConfig
-{
-    public double OnThreshold { get; set; } = 0.6;
-    public double OffThreshold { get; set; } = 0.5;
-    public int DebounceMs { get; set; } = 150;
-    public int RateHz { get; set; } = 15;
-    public int UdpPort { get; set; } = 7400;
-    public int HttpPort { get; set; } = 8080;
-    public bool KeyboardMode { get; set; } = false;
-    public string LogLevel { get; set; } = "INFO";
-}
-
-class BrainEvent
-{
-    [JsonPropertyName("ts")] public long Ts { get; set; }
-    [JsonPropertyName("type")] public string Type { get; set; } = "";
-    [JsonPropertyName("action")] public string Action { get; set; } = "";
-    [JsonPropertyName("confidence")] public double Confidence { get; set; }
-    [JsonPropertyName("durationMs")] public int DurationMs { get; set; }
-    [JsonPropertyName("source")] public string Source { get; set; } = "";
-}
-
-class StateSnapshot
-{
-    [JsonPropertyName("active")] public string Active { get; set; } = "";
-    [JsonPropertyName("confidence")] public double Confidence { get; set; }
-    [JsonPropertyName("durationMs")] public int DurationMs { get; set; }
-    [JsonPropertyName("source")] public string Source { get; set; } = "";
-    [JsonPropertyName("timestamp")] public long Timestamp { get; set; }
-}
-
-class Logger
-{
-    private readonly int _level;
-    
-    public Logger(string level)
-    {
-        _level = level.ToUpper() switch
-        {
-            "DEBUG" => 0,
-            "INFO" => 1,
-            "WARN" => 2,
-            "ERROR" => 3,
-            _ => 1
-        };
-    }
-
-    private void Log(int level, string levelStr, string component, string message, ConsoleColor color)
-    {
-        if (level < _level) return;
-        
-        string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-        Console.ForegroundColor = color;
-        Console.WriteLine($"[{timestamp}] [{levelStr,-5}] [{component}] {message}");
-        Console.ResetColor();
-    }
-
-    public void Debug(string component, string message) => Log(0, "DEBUG", component, message, ConsoleColor.Gray);
-    public void Info(string component, string message) => Log(1, "INFO", component, message, ConsoleColor.White);
-    public void Warn(string component, string message, Exception? ex = null)
-    {
-        Log(2, "WARN", component, message, ConsoleColor.Yellow);
-        if (ex != null && _level == 0) Console.WriteLine($"  {ex}");
-    }
-    public void Error(string component, string message, Exception? ex = null)
-    {
-        Log(3, "ERROR", component, message, ConsoleColor.Red);
-        if (ex != null) Console.WriteLine($"  {ex}");
-    }
+    KEYDOWN  = 0x0000,
+    KEYUP    = 0x0002,
+    EXTENDED = 0x0001
 }

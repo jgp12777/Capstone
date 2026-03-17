@@ -20,9 +20,15 @@ public class BoxController : MonoBehaviour
     private Vector3 targetPosition;
     private bool isMoving = false;
     private Queue<string> commandQueue = new Queue<string>();
+    private const int MAX_QUEUE_SIZE = 10;
 
     void Start()
     {
+        if (!serverUrl.StartsWith("http://localhost") && !serverUrl.StartsWith("https://"))
+        {
+            Debug.LogError("[SECURITY] serverUrl must use HTTPS for non-localhost addresses!");
+            return;
+        }
         targetPosition = transform.position;
         Debug.Log("==============================================");
         Debug.Log("<color=white>[BOXCONTROLLER] Started successfully!</color>");
@@ -114,6 +120,11 @@ public class BoxController : MonoBehaviour
 
         if (IsValidCommand(command))
         {
+            if (commandQueue.Count >= MAX_QUEUE_SIZE)
+            {
+                Debug.LogWarning("[COMMAND QUEUE] Queue full, dropping oldest command.");
+                commandQueue.Dequeue();
+            }
             commandQueue.Enqueue(command);
             Debug.Log($"<color=cyan>[COMMAND QUEUED] Command '{command}' added to queue. Queue size: {commandQueue.Count}</color>");
         }

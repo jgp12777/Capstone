@@ -1,6 +1,6 @@
 ﻿using System;
 using System.IO;
-using System.Runtime.Serialization.Formatters.Binary;
+using System.Text.Json;
 using System.Timers;
 
 namespace EmotivUnityPlugin
@@ -290,11 +290,9 @@ namespace EmotivUnityPlugin
 
             try
             {
-                // get tokenSavedInfo from file
-                Stream stream = File.Open(fileDir, FileMode.Open);
-                BinaryFormatter bformater = new BinaryFormatter();
-                UserDataInfo tokenSavedInfo = (UserDataInfo)bformater.Deserialize(stream);
-                stream.Close();
+                // get tokenSavedInfo from file using safe JSON deserialization
+                string json = File.ReadAllText(fileDir);
+                UserDataInfo tokenSavedInfo = JsonSerializer.Deserialize<UserDataInfo>(json);
                 if (tokenSavedInfo == null) {
                     UnityEngine.Debug.Log("LoadToken: tokenSavedInfo is null");
                     return new UserDataInfo();
@@ -322,11 +320,9 @@ namespace EmotivUnityPlugin
             string fileDir = Path.Combine(Config.DataDirectory, Config.TmpDataFileName);
             try
             {
-                // save tokenSavedInfo to file
-                Stream stream = File.Open(fileDir, FileMode.Create);
-                BinaryFormatter bformater = new BinaryFormatter();
-                bformater.Serialize(stream, tokenSavedInfo);
-                stream.Close();
+                // save tokenSavedInfo to file using safe JSON serialization
+                string json = JsonSerializer.Serialize(tokenSavedInfo);
+                File.WriteAllText(fileDir, json);
                 UnityEngine.Debug.Log("Save token done.");
 
             }

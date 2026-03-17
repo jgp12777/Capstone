@@ -11,6 +11,7 @@ namespace EmotivUnityPlugin
         public const int DEFAULT_SENSITIVITY = 5; // default sensitivity for mental command training
 
         private static BCIGameItf _instance;
+        private static readonly object _lock = new object();
         private EmotivUnityItf emotivUnityItf = EmotivUnityItf.Instance;
 
         private BCIGameItf()
@@ -24,7 +25,11 @@ namespace EmotivUnityPlugin
             {
                 if (_instance == null)
                 {
-                    _instance = new BCIGameItf();
+                    lock (_lock)
+                    {
+                        if (_instance == null)
+                            _instance = new BCIGameItf();
+                    }
                 }
                 return _instance;
             }

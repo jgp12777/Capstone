@@ -59,6 +59,16 @@ namespace EmotivUnityPlugin
         // override the init method
         public override void Init(object context = null)
         {
+            if (string.IsNullOrEmpty(Config.AppUrl))
+            {
+                UnityEngine.Debug.LogError("WebsocketCortexClient: AppUrl is not configured.");
+                return;
+            }
+            if (!Config.AppUrl.StartsWith("wss://"))
+            {
+                UnityEngine.Debug.LogError("WebsocketCortexClient: AppUrl must use wss:// (TLS required).");
+                return;
+            }
             _wSC = new WebSocket(Config.AppUrl);
             // Since Emotiv Cortex 3.7.0, the supported SSL Protocol will be TLS1.2 or later
             _wSC.Security.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
@@ -77,6 +87,8 @@ namespace EmotivUnityPlugin
         {
             UnityEngine.Debug.Log("Force close websocket client.");
             if (_wscTimer != null) {
+                _wscTimer.Stop();
+                _wscTimer.Dispose();
                 _wscTimer = null;
             }
             // stop websocket client
@@ -130,6 +142,11 @@ namespace EmotivUnityPlugin
         {
             lock(_locker)
             {
+                if (_wSC == null)
+                {
+                    UnityEngine.Debug.LogError($"SendTextMessage: WebSocket not initialized (method={method}). Call Init() first.");
+                    return;
+                }
                 string request = PrepareRequest(method, param, hasParam);
                 // UnityEngine.Debug.Log("Send " + method);
                 // UnityEngine.Debug.Log(request.ToString());
@@ -164,7 +181,7 @@ namespace EmotivUnityPlugin
         private void WebSocketClient_Opened(object sender, EventArgs e)
         {
             m_OpenedEvent.Set();
-            if (_wSC.State == WebSocketState.Open) {
+            if (_wSC != null && _wSC.State == WebSocketState.Open) {
                 OnWSConnected(true);
                 // stop timer
                 _wscTimer.Stop();
