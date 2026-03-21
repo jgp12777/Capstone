@@ -526,6 +526,9 @@
         // Configuration
         const WS_URL = 'ws://127.0.0.1:8080/stream';
         const UDP_PROXY_URL = 'http://127.0.0.1:8080/broadcast';
+        // Must match the BCI_BROADCAST_TOKEN environment variable set on the server.
+        // Leave empty if using the Node.js relay (Orchestrator/local_server.js) which has no auth.
+        const BROADCAST_TOKEN = '';
         
         // State
         let ws = null;
@@ -612,11 +615,12 @@
 
             try {
                 // Send via HTTP POST to broadcast endpoint
+                const headers = { 'Content-Type': 'application/json' };
+                if (BROADCAST_TOKEN) headers['X-Broadcast-Token'] = BROADCAST_TOKEN;
+
                 const response = await fetch(UDP_PROXY_URL, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers,
                     body: JSON.stringify(payload)
                 });
 

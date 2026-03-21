@@ -4,7 +4,7 @@ const readline = require('readline');
 const wss = new WebSocket.Server({ port: 8080 });
 
 console.log("WebSocket server running on ws://localhost:8080");
-console.log("Type: right, left, up, down, neutral");
+console.log("Type: push, pull, left, right, neutral");
 console.log("Press Ctrl+C to stop.\n");
 
 let connectedClient = null;
@@ -29,7 +29,7 @@ const rl = readline.createInterface({
 rl.on('line', (input) => {
   const command = input.trim().toLowerCase();
 
-  const validCommands = ["right", "left", "up", "down", "neutral"];
+  const validCommands = ["push", "pull", "left", "right", "neutral"];
 
   if (!validCommands.includes(command)) {
     console.log("Invalid command. Use: right, left, up, down, neutral");
@@ -38,8 +38,10 @@ rl.on('line', (input) => {
 
   if (connectedClient && connectedClient.readyState === WebSocket.OPEN) {
     const message = JSON.stringify({
-      command: command,
-      confidence: 0.85
+      type:       "mental_command",
+      action:     command,
+      confidence: 0.85,
+      ts:         Date.now()
     });
 
     connectedClient.send(message);

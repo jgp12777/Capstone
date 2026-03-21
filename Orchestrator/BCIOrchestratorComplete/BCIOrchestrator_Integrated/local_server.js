@@ -103,10 +103,14 @@ const httpServer = http.createServer((req, res) => {
     }
     
     switch (path) {
+        case '/command':
+            handleCommandRequest(req, res);
+            break;
+
         case '/state':
             handleStateRequest(req, res);
             break;
-            
+
         case '/healthz':
             handleHealthRequest(req, res);
             break;
@@ -128,6 +132,14 @@ const httpServer = http.createServer((req, res) => {
             break;
     }
 });
+
+// Maps current active action to a single-letter command for BoxController polling
+function handleCommandRequest(req, res) {
+    const map = { push: 'U', pull: 'D', left: 'L', right: 'R' };
+    const cmd = map[currentState.active] ?? '';
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end(cmd);
+}
 
 function handleStateRequest(req, res) {
     const state = {

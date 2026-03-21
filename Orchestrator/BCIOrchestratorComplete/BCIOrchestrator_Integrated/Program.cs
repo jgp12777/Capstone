@@ -440,6 +440,13 @@ namespace BciOrchestrator
                         await SendTextResponseAsync(context, "ok");
                         break;
 
+                    case "/command":
+                        if (method == "GET")
+                            await HandleCommandRequestAsync(context);
+                        else
+                            SendMethodNotAllowed(context);
+                        break;
+
                     case "/broadcast":
                         if (method == "POST")
                             await HandleBroadcastRequestAsync(context);
@@ -527,6 +534,23 @@ namespace BciOrchestrator
             var state = _getStateSnapshot?.Invoke() ?? new StateSnapshot();
             string json = JsonSerializer.Serialize(state);
             await SendJsonResponseAsync(context, json);
+        }
+
+        // Maps the current active action to a single-letter command for BoxController:
+        //   push → U, pull → D, left → L, right → R, anything else → ""
+        private async Task HandleCommandRequestAsync(HttpListenerContext context)
+        {
+            var state = _getStateSnapshot?.Invoke();
+            string action = state?.Active ?? "neutral";
+            string cmd = action.ToLowerInvariant() switch
+            {
+                "push"  => "U",
+                "pull"  => "D",
+                "left"  => "L",
+                "right" => "R",
+                _       => ""
+            };
+            await SendTextResponseAsync(context, cmd);
         }
 
         private async Task HandleBroadcastRequestAsync(HttpListenerContext context)
