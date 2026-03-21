@@ -37,7 +37,7 @@ class CommandServer(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header('Content-type', 'text/plain')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', 'http://localhost')
             self.end_headers()
             self.wfile.write(command.encode())
 
@@ -78,7 +78,7 @@ class CommandServer(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Origin', 'http://localhost')
                 self.end_headers()
                 response = json.dumps({'status': 'success', 'command': command})
                 self.wfile.write(response.encode())
@@ -97,7 +97,7 @@ class CommandServer(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Origin', 'http://localhost')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
@@ -119,7 +119,7 @@ def clear_old_commands():
 
 
 def run_server(port=8080):
-    server_address = ('', port)
+    server_address = ('127.0.0.1', port)
     httpd = HTTPServer(server_address, CommandServer)
 
     # Start background thread to clear old commands
@@ -129,8 +129,8 @@ def run_server(port=8080):
     print("=" * 60)
     print(f"Command Server Running on Port {port}")
     print("=" * 60)
-    print(f"POST commands to: http://localhost:{port}/command")
-    print(f"Unity polls from:  http://localhost:{port}/command")
+    print(f"POST commands to: http://127.0.0.1:{port}/command")
+    print(f"Unity polls from:  http://127.0.0.1:{port}/command")
     print()
     print("Example usage:")
     print(f"  curl -X POST http://localhost:{port}/command -d 'command=R'")
